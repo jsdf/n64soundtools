@@ -95,12 +95,14 @@ class BufferStruct {
               return {value, parsedSize: size};
             };
 
+      // the ability to provide predetermined size, as well as define alignment, means we need to account for either of these
+      // sources of padding when advancing the point we are reading in the buffer
       const parseWithAlignment = (buffer, startOffset) => {
         const {value, parsedSize} = parse(buffer, startOffset);
 
         if (size != null && parsedSize > size) {
           throw new Error(
-            `parsed size ${parsedSize} larger than predetermined size ${size} for field ${fieldName} on ${this.constructor.name}`
+            `parsed size ${parsedSize} larger than predetermined size ${size} for field ${fieldName} on ${this.getName()}`
           );
         }
 
@@ -114,7 +116,7 @@ class BufferStruct {
 
         if (size != null && parsedSizeWithAlignment > size) {
           throw new Error(
-            `aligned parsed size ${parsedSize} larger than predetermined size ${size} for field ${fieldName} on ${this.constructor.name}`
+            `aligned parsed size ${parsedSize} larger than predetermined size ${size} for field ${fieldName} on ${this.getName()}`
           );
         }
 
@@ -123,6 +125,7 @@ class BufferStruct {
 
       try {
         if (field.arrayElements) {
+          // array field
           const count =
             typeof field.arrayElements === 'function'
               ? field.arrayElements(result)
@@ -138,13 +141,14 @@ class BufferStruct {
 
           result[fieldName] = array;
         } else {
+          // non-array field
           const {value, consumedSize} = parseWithAlignment(buffer, offset);
           offset += consumedSize;
           result[fieldName] = value;
         }
       } catch (error) {
         throw new Error(
-          `failed parsing field ${fieldName} on ${this.constructor.name}: ${error}`
+          `failed parsing field ${fieldName} on ${this.getName()}: ${error}`
         );
       }
     });
@@ -191,10 +195,11 @@ class BufferStruct {
       actualType = type.selectMember(partialResult);
       if (actualType == null) {
         throw new Error(
-          `failed to refine union type in field ${fieldName} on ${this.constructor.name}`
+          `failed to refine union type in field ${fieldName} on ${this.getName()}`
         );
       }
     }
+
     return {field, endian, size, type: actualType};
   }
 
@@ -203,6 +208,11 @@ class BufferStruct {
     Object.keys(this.schema.fields).forEach((fieldName) => {
       const {field, endian, size, type} = this._getFieldConfig(fieldName, data);
 
+      if (!(fieldName in data)) {
+        throw new Error(
+          `missing field ${fieldName} when serializing ${this.getName()}`
+        );
+      }
       const value = data[fieldName];
 
       const serialize =
@@ -241,22 +251,32 @@ class BufferStruct {
       const serializeWithAlignment = (value) => {
         const partBuffer = serialize(value);
         const serializedSize = partBuffer.length;
-
-        let maybeAlignedBuffer = partBuffer;
-        if (field.align != null) {
-          const alignedSize = getAlignedSize(partBuffer.length, align);
-
-          const partBufferAligned = Buffer.alloc(alignedSize);
-          partBuffer.copy(partBufferAligned);
-          maybeAlignedBuffer = partBufferAligned;
-        }
-
-        if (size != null && maybeAlignedBuffer.length > size) {
+        if (size != null && serializedSize > size) {
           throw new Error(
-            `final size ${maybeAlignedBuffer.length} larger than predetermined size ${size} for field ${fieldName} on ${this.constructor.name}`
+            `serialized size ${parsedSize} larger than predetermined size ${size} for field ${fieldName} on ${this.getName()}`
           );
         }
-        return maybeAlignedBuffer;
+
+        let maybeAlignedPartBuffer = partBuffer;
+        if (field.align != null) {
+          const alignedSerializedSize = getAlignedSize(
+            serializedSize,
+            field.align
+          );
+          const alignedExpectedSize = getAlignedSize(size, field.align);
+          if (alignedSerializedSize > alignedExpectedSize)
+            throw new Error(
+              `serialized aligned size ${
+                maybeAlignedPartBuffer.length
+              } larger than predetermined size (aligned) ${alignedExpectedSize} for field ${fieldName} on ${this.getName()}`
+            );
+
+          const partBufferAligned = Buffer.alloc(alignedSerializedSize);
+          partBuffer.copy(partBufferAligned);
+          maybeAlignedPartBuffer = partBufferAligned;
+        }
+
+        return maybeAlignedPartBuffer;
       };
 
       try {
@@ -281,20 +301,22 @@ class BufferStruct {
     let size = 0;
     for (const field of Object.values(this.schema.fields)) {
       if (typeof field.size != 'number') {
-        throw new Error(
-          'cannot get static size of struct: ' + this.constructor.name
-        );
-        const alignedFieldSize =
-          field.align != null
-            ? getAlignedSize(field.size, field.align)
-            : field.size;
+        throw new Error('cannot get static size of struct: ' + this.getName());
+        const alignedFieldSize = getAlignedSizeForField(field, field.size);
         size += alignedFieldSize;
       }
     }
     return size;
   }
+
+  getName() {
+    return this.schema.name || this.constructor.name;
+  }
 }
 
+// simulates c struct union functionality, using the provided selectMember function
+// to choose which union member (BufferStruct) to interpret data as based on previously parsed fields.
+// requires that all union members have statically determinable size (eg. no arrays or dynamically sized bytes fields allowed)
 class BufferStructUnion {
   constructor({members, selectMember}) {
     this.selectMember = selectMember;
@@ -302,6 +324,8 @@ class BufferStructUnion {
     this.size = Math.max(...members.map((m) => m.getStaticSize()));
   }
 }
+
+// end BufferStruct code
 
 const AL_ADPCM_WAVE = 0;
 const AL_RAW16_WAVE = 1;
@@ -312,6 +336,7 @@ const AL_RAW16_WAVE = 1;
 //         s32     bankArray[1];
 // } ALBankFile;
 const ALBankFileStruct = new BufferStruct({
+  name: 'ALBankFile',
   endian: 'big',
   fields: {
     revision: {type: 'int', size: 2},
@@ -334,6 +359,7 @@ const ALBankFileStruct = new BufferStruct({
 // } ALBank;
 
 const ALBankStruct = new BufferStruct({
+  name: 'ALBank',
   endian: 'big',
   fields: {
     instCount: {type: 'int', size: 2},
@@ -368,6 +394,7 @@ const ALBankStruct = new BufferStruct({
 // } ALInstrument;
 
 const ALInstrumentStruct = new BufferStruct({
+  name: 'ALInstrument',
   endian: 'big',
   fields: {
     volume: {type: 'uint', size: 1},
@@ -402,6 +429,7 @@ const ALInstrumentStruct = new BufferStruct({
 // } ALSound;
 
 const ALSoundStruct = new BufferStruct({
+  name: 'ALSound',
   endian: 'big',
   fields: {
     envelope: {type: 'int', size: 4},
@@ -422,6 +450,7 @@ const ALSoundStruct = new BufferStruct({
 // } ALEnvelope;
 
 const ALEnvelopeStruct = new BufferStruct({
+  name: 'ALEnvelope',
   endian: 'big',
   fields: {
     attackTime: {type: 'int', size: 4},
@@ -442,6 +471,7 @@ const ALEnvelopeStruct = new BufferStruct({
 // } ALKeyMap;
 
 const ALKeyMapStruct = new BufferStruct({
+  name: 'ALKeyMap',
   endian: 'big',
   fields: {
     velocityMin: {type: 'uint', size: 1},
@@ -459,6 +489,7 @@ const ALKeyMapStruct = new BufferStruct({
 // }ALADPCMWaveInfo;
 
 const ALADPCMWaveInfoStruct = new BufferStruct({
+  name: 'ALADPCMWaveInfo',
   endian: 'big',
   fields: {
     loop: {type: 'uint', size: 4},
@@ -471,6 +502,7 @@ const ALADPCMWaveInfoStruct = new BufferStruct({
 // }ALRAWWaveInfo;
 
 const ALRAWWaveInfoStruct = new BufferStruct({
+  name: 'ALRAWWaveInfo',
   endian: 'big',
   fields: {
     loop: {type: 'uint', size: 4},
@@ -489,6 +521,7 @@ const ALRAWWaveInfoStruct = new BufferStruct({
 // } ALWaveTable;
 
 const ALWaveTableStruct = new BufferStruct({
+  name: 'ALWaveTable',
   endian: 'big',
   fields: {
     base: {type: 'int', size: 4},
@@ -515,10 +548,12 @@ const ALWaveTableStruct = new BufferStruct({
 // http://paulbourke.net/dataformats/audio/
 // http://www-mmsp.ece.mcgill.ca/Documents/AudioFormats/AIFF/Docs/AIFF-1.3.pdf
 const AIFFChunkStruct = new BufferStruct({
+  name: 'AIFFChunk',
   endian: 'big',
   fields: {
-    // ckID: {type: 'bytes', size: 4},
+    ckID: {type: 'bytes', size: 4},
     ckSize: {type: 'int', size: 4},
+    chunkData: {type: 'bytes', align: 2, size: (fields) => fields.ckSize},
   },
 });
 
@@ -527,18 +562,20 @@ const AIFFChunkStruct = new BufferStruct({
 // short sampleSize;
 // extended sampleRate;
 const AIFFCommDataStruct = new BufferStruct({
+  name: 'AIFFCommData',
   endian: 'big',
   fields: {
     numChannels: {type: 'int', size: 2},
     numSampleFrames: {type: 'uint', size: 4},
     sampleSize: {type: 'int', size: 2},
-    // sampleRate: {type: 'bytes', size: 10},
+    sampleRate: {type: 'bytes', size: 10},
   },
 });
 
 // unsigned long offset;
 // unsigned long blockSize;
 const AIFFSoundDataStruct = new BufferStruct({
+  name: 'AIFFSoundData',
   endian: 'big',
   fields: {
     offset: {type: 'uint', size: 4},
@@ -546,23 +583,16 @@ const AIFFSoundDataStruct = new BufferStruct({
   },
 });
 
-function makeAIFFChunk(ckID, data) {
-  let dataPadded = data;
-  if (data.length % 2 === 1) {
-    dataPadded = Buffer.concat([data, Buffer.alloc(1)]);
+function makeAIFFChunk(ckID, chunkData) {
+  if (ckID === 'COMM' && chunkData.length !== 18) {
+    throw new Error('invalid COMM chunk size:', chunkData.length);
   }
 
-  if (ckID === 'COMM' && data.length !== 18) {
-    throw new Error('invalid COMM chunk size:', data.length);
-  }
-
-  return Buffer.concat([
-    Buffer.from(ckID, 'utf8'),
-    AIFFChunkStruct.serialize({
-      ckSize: data.length,
-    }),
-    dataPadded,
-  ]);
+  return AIFFChunkStruct.serialize({
+    ckID: Buffer.from(ckID, 'utf8'),
+    ckSize: chunkData.length,
+    chunkData,
+  });
 }
 
 async function run() {
@@ -634,14 +664,12 @@ async function run() {
 
       const commChunk = makeAIFFChunk(
         'COMM',
-        Buffer.concat([
-          AIFFCommDataStruct.serialize({
-            numChannels: 1,
-            numSampleFrames: nsamples,
-            sampleSize: 16,
-          }),
-          /*sampleRate*/ Buffer.from('400EAC44000000000000', 'hex'), // 44100hz
-        ])
+        AIFFCommDataStruct.serialize({
+          numChannels: 1,
+          numSampleFrames: nsamples,
+          sampleSize: 16,
+          sampleRate: Buffer.from('400EAC44000000000000', 'hex'), // 44100hz
+        })
       );
 
       const soundDataChunk = makeAIFFChunk(
