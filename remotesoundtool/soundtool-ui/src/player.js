@@ -2,6 +2,48 @@ const {Midi} = require('@tonejs/midi');
 
 const {midiCCs} = require('./midicc');
 
+const allowedCCs = new Set([
+  'bankselectcoarse',
+  'modulationwheelcoarse',
+  'breathcontrollercoarse',
+  'footcontrollercoarse',
+  'portamentotimecoarse',
+  'volumecoarse',
+  'balancecoarse',
+  'pancoarse',
+  'expressioncoarse',
+  'effectcontrol1coarse',
+  'effectcontrol2coarse',
+  'bankselectfine',
+  'modulationwheelfine',
+  'breathcontrollerfine',
+  'footcontrollerfine',
+  'portamentotimefine',
+  'dataentryfine',
+  'volumefine',
+  'balancefine',
+  'panfine',
+  'expressionfine',
+  'effectcontrol1fine',
+  'effectcontrol2fine',
+  'holdpedal',
+  'portamento',
+  'sustenutopedal',
+  'softpedal',
+  'legatopedal',
+  'hold2pedal',
+  'soundvariation',
+  'resonance',
+  'soundreleasetime',
+  'soundattacktime',
+  'brightness',
+  'reverblevel',
+  'tremololevel',
+  'choruslevel',
+  'celestelevel',
+  'phaserlevel',
+]);
+
 class Player {
   playing = false;
   startTime = 0;
@@ -15,7 +57,7 @@ class Player {
   _renderMIDIStream(midi, channelFilter) {
     const events = [];
     midi.tracks.forEach((track) => {
-      // if (channelFilter && !channelFilter.has(track.channel)) return;
+      if (channelFilter && !channelFilter.has(track.channel)) return;
       console.log(
         'channel',
         track.channel,
@@ -63,6 +105,10 @@ class Player {
       });
 
       Object.values(track.controlChanges).forEach((ccEventArray, key) => {
+        if (!allowedCCs.has(midiCCs[key])) {
+          console.log('dropping cc ', key, midiCCs[key], ccEventArray);
+          return;
+        }
         ccEventArray.forEach((ccEvent) => {
           events.push({
             time: 1000 * (isNaN(ccEvent.time) ? 0 : ccEvent.time),

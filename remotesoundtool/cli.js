@@ -52,7 +52,7 @@ const eventLog = [];
 
 async function runWithEverdriveOut() {
   const DebuggerInterface = DEV
-    ? require('../../ed64logjs/dbgif')
+    ? require('../../ed64log/ed64logjs/dbgif')
     : require('ed64logjs/dbgif');
   const dbgif = new DebuggerInterface();
   await dbgif.start();
