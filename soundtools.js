@@ -1,331 +1,7 @@
 const fs = require('fs').promises;
 
-const ieeeExtended = require('./ieeeextended');
-
-function nullthrows(value, message) {
-  if (value == null) {
-    throw new Error('unexpected null' + (message ? ': ' + message : ''));
-  }
-  return value;
-}
-
-const BufferStructFieldTypesToBufferMethods = {
-  uint: 'UInt',
-  int: 'Int',
-  float: 'Float',
-  double: 'Double',
-  bigint: 'BigInt',
-  biguint: 'BigUint',
-  char: 'UInt',
-};
-
-function getBufferMethodName(type, size, endian) {
-  return `${BufferStructFieldTypesToBufferMethods[type]}${size * 8}${
-    size == 1 ? '' : endian == 'big' ? 'BE' : 'LE'
-  }`;
-}
-
-function getAlignedSize(size, alignment) {
-  return Math.ceil(size / alignment) * alignment;
-}
-
-function getAlignedSizeForField(field, size) {
-  return field.align != null ? getAlignedSize(size, field.align) : size;
-}
-
-class BufferStruct {
-  constructor(schema) {
-    this.schema = schema;
-    this.offset = 0;
-  }
-
-  parse(buffer, startOffset) {
-    const result = {};
-    let offset = startOffset || 0;
-    function advance(methodName) {
-      const value = buffer[`read${methodName}`](this.offset);
-      offset += size;
-      return value;
-    }
-    Object.keys(this.schema.fields).forEach((fieldName) => {
-      const {field, endian, size, type} = this._getFieldConfig(
-        fieldName,
-        result
-      );
-
-      const parse =
-        type === 'bytes'
-          ? (buffer, startOffset) => {
-              if (size == null) {
-                throw new Error(
-                  `can't parse field of type 'bytes' without predetermined size`
-                );
-              }
-              const value = buffer.slice(startOffset, startOffset + size);
-              return {value, parsedSize: size};
-            }
-          : type instanceof BufferStruct
-          ? (buffer, startOffset) => {
-              const value = type.parse(buffer, startOffset);
-              // use static size where determined (eg. in case of union)
-              const parsedSize =
-                size != null ? size : type.offset - startOffset; // change in offset after parsing
-
-              return {value, parsedSize};
-            }
-          : (buffer, startOffset) => {
-              const methodName = `read${getBufferMethodName(
-                type,
-                size,
-                endian
-              )}`;
-
-              const value = buffer[methodName](startOffset);
-              if (this.schema.traceReads) {
-                console.log(methodName, {
-                  fieldName,
-                  type,
-                  size,
-                  endian,
-                  startOffset,
-                  value,
-                });
-              }
-
-              return {value, parsedSize: size};
-            };
-
-      // the ability to provide predetermined size, as well as define alignment, means we need to account for either of these
-      // sources of padding when advancing the point we are reading in the buffer
-      const parseWithAlignment = (buffer, startOffset) => {
-        const {value, parsedSize} = parse(buffer, startOffset);
-
-        if (size != null && parsedSize > size) {
-          throw new Error(
-            `parsed size ${parsedSize} larger than predetermined size ${size} for field ${fieldName} on ${this.getName()}`
-          );
-        }
-
-        // when field is aligned we must make sure to advance by aligned size
-        // additionally, if a predetermined size is set, we should use that size instead (in case of padding)
-        // we have already asserted above that the parsed size is not larger than the predetermined size
-        let parsedSizeWithAlignment = getAlignedSizeForField(
-          field,
-          size != null ? parsedSize : size
-        );
-
-        if (size != null && parsedSizeWithAlignment > size) {
-          throw new Error(
-            `aligned parsed size ${parsedSize} larger than predetermined size ${size} for field ${fieldName} on ${this.getName()}`
-          );
-        }
-
-        return {value, consumedSize: parsedSizeWithAlignment};
-      };
-
-      try {
-        if (field.arrayElements) {
-          // array field
-          const count =
-            typeof field.arrayElements === 'function'
-              ? field.arrayElements(result)
-              : field.arrayElements;
-          const array = new Array(count);
-
-          for (var i = 0; i < count; ++i) {
-            const {value, consumedSize} = parseWithAlignment(buffer, offset);
-
-            offset += consumedSize;
-            array[i] = value;
-          }
-
-          result[fieldName] = array;
-        } else {
-          // non-array field
-          const {value, consumedSize} = parseWithAlignment(buffer, offset);
-          offset += consumedSize;
-          result[fieldName] = value;
-        }
-      } catch (error) {
-        throw new Error(
-          `failed parsing field ${fieldName} on ${this.getName()}: ${error}`
-        );
-      }
-    });
-    this.offset = offset;
-    return result;
-  }
-
-  _getFieldConfig(fieldName, partialResult) {
-    const field = nullthrows(
-      this.schema.fields[fieldName],
-      `${fieldName} schema is missing`
-    );
-    const endian = field.endian || this.schema.endian || 'little';
-    const type = nullthrows(field.type, `${fieldName} type`);
-    if (
-      !(
-        type instanceof BufferStruct ||
-        type instanceof BufferStructUnion ||
-        type in BufferStructFieldTypesToBufferMethods ||
-        type === 'bytes'
-      )
-    ) {
-      throw new Error(`unsupported type ${type} in ${fieldName}`);
-    }
-
-    // use statically defined size if we've got it
-    let size =
-      typeof field.size === 'function' ? field.size(partialResult) : field.size;
-    if (type === 'bytes') {
-      // allow size to be dynamic
-    } else if (type instanceof BufferStruct) {
-      // allow size to be dynamic
-    } else if (type instanceof BufferStructUnion) {
-      // size will be statically known (asserted in BufferStructUnion)
-      size = type.size;
-    } else {
-      // size must be statically known
-      size = nullthrows(size, `${fieldName} size`);
-    }
-
-    let actualType = type;
-    // replace union type with actual type
-    if (type instanceof BufferStructUnion) {
-      actualType = type.selectMember(partialResult);
-      if (actualType == null) {
-        throw new Error(
-          `failed to refine union type in field ${fieldName} on ${this.getName()}`
-        );
-      }
-    }
-
-    return {field, endian, size, type: actualType};
-  }
-
-  serialize(data) {
-    const parts = [];
-    Object.keys(this.schema.fields).forEach((fieldName) => {
-      const {field, endian, size, type} = this._getFieldConfig(fieldName, data);
-
-      if (!(fieldName in data)) {
-        throw new Error(
-          `missing field ${fieldName} when serializing ${this.getName()}`
-        );
-      }
-      const value = data[fieldName];
-
-      const serialize =
-        type === 'bytes'
-          ? (value) => {
-              const dynSize = size == null ? value.length : size;
-              const partBuffer = Buffer.alloc(dynSize);
-              value.copy(partBuffer, 0, 0, dynSize);
-
-              return partBuffer;
-            }
-          : type instanceof BufferStruct
-          ? (value) => type.serialize(value)
-          : (value) => {
-              const methodName = `write${getBufferMethodName(
-                type,
-                size,
-                endian
-              )}`;
-
-              const partBuffer = Buffer.alloc(size);
-              partBuffer[methodName](value);
-              if (this.schema.traceWrites) {
-                console.log(methodName, {
-                  fieldName,
-                  type,
-                  size,
-                  endian,
-                  value,
-                });
-              }
-
-              return partBuffer;
-            };
-
-      const serializeWithAlignment = (value) => {
-        const partBuffer = serialize(value);
-        const serializedSize = partBuffer.length;
-        if (size != null && serializedSize > size) {
-          throw new Error(
-            `serialized size ${parsedSize} larger than predetermined size ${size} for field ${fieldName} on ${this.getName()}`
-          );
-        }
-
-        let maybeAlignedPartBuffer = partBuffer;
-        if (field.align != null) {
-          const alignedSerializedSize = getAlignedSize(
-            serializedSize,
-            field.align
-          );
-          const alignedExpectedSize = getAlignedSize(size, field.align);
-          if (alignedSerializedSize > alignedExpectedSize)
-            throw new Error(
-              `serialized aligned size ${
-                maybeAlignedPartBuffer.length
-              } larger than predetermined size (aligned) ${alignedExpectedSize} for field ${fieldName} on ${this.getName()}`
-            );
-
-          const partBufferAligned = Buffer.alloc(alignedSerializedSize);
-          partBuffer.copy(partBufferAligned);
-          maybeAlignedPartBuffer = partBufferAligned;
-        }
-
-        return maybeAlignedPartBuffer;
-      };
-
-      try {
-        if (field.arrayElements) {
-          for (var i = 0; i < value.length; ++i) {
-            const part = serializeWithAlignment(value[i]);
-            parts.push(part);
-          }
-        } else {
-          const part = serializeWithAlignment(value);
-          parts.push(part);
-        }
-      } catch (error) {
-        throw new Error(`failed serializing field ${fieldName}: ${error}`);
-      }
-    });
-
-    return Buffer.concat(parts);
-  }
-
-  getStaticSize() {
-    let size = 0;
-    for (const field of Object.values(this.schema.fields)) {
-      if (typeof field.size != 'number') {
-        throw new Error('cannot get static size of struct: ' + this.getName());
-        const alignedFieldSize = getAlignedSizeForField(field, field.size);
-        size += alignedFieldSize;
-      }
-    }
-    return size;
-  }
-
-  getName() {
-    return this.schema.name || this.constructor.name;
-  }
-}
-
-// simulates c struct union functionality, using the provided selectMember function
-// to choose which union member (BufferStruct) to interpret data as based on previously parsed fields.
-// requires that all union members have statically determinable size (eg. no arrays or dynamically sized bytes fields allowed)
-class BufferStructUnion {
-  constructor({members, selectMember}) {
-    this.selectMember = selectMember;
-    this.members = members;
-    this.size = Math.max(...members.map((m) => m.getStaticSize()));
-  }
-}
-
-// end BufferStruct code
+const AIFF = require('./aiff');
+const {BufferStruct, BufferStructUnion} = require('./bufferstruct');
 
 const AL_ADPCM_WAVE = 0;
 const AL_RAW16_WAVE = 1;
@@ -339,7 +15,7 @@ const ALBankFileStruct = new BufferStruct({
   name: 'ALBankFile',
   endian: 'big',
   fields: {
-    revision: {type: 'int', size: 2},
+    revision: {type: 'bytes', size: 2},
     bankCount: {type: 'int', size: 2},
     bankArray: {
       type: 'int',
@@ -432,9 +108,9 @@ const ALSoundStruct = new BufferStruct({
   name: 'ALSound',
   endian: 'big',
   fields: {
-    envelope: {type: 'int', size: 4},
-    keyMap: {type: 'int', size: 4},
-    wavetable: {type: 'int', size: 4},
+    envelope: {type: 'uint', size: 4},
+    keyMap: {type: 'uint', size: 4},
+    wavetable: {type: 'uint', size: 4},
     samplePan: {type: 'uint', size: 1},
     sampleVolume: {type: 'uint', size: 1},
     flags: {type: 'uint', size: 1},
@@ -544,58 +220,7 @@ const ALWaveTableStruct = new BufferStruct({
   },
 });
 
-// AIFF stuff
-// http://paulbourke.net/dataformats/audio/
-// http://www-mmsp.ece.mcgill.ca/Documents/AudioFormats/AIFF/Docs/AIFF-1.3.pdf
-const AIFFChunkStruct = new BufferStruct({
-  name: 'AIFFChunk',
-  endian: 'big',
-  fields: {
-    ckID: {type: 'bytes', size: 4},
-    ckSize: {type: 'int', size: 4},
-    chunkData: {type: 'bytes', align: 2, size: (fields) => fields.ckSize},
-  },
-});
-
-// short numChannels;
-// unsigned long numSampleFrames;
-// short sampleSize;
-// extended sampleRate;
-const AIFFCommDataStruct = new BufferStruct({
-  name: 'AIFFCommData',
-  endian: 'big',
-  fields: {
-    numChannels: {type: 'int', size: 2},
-    numSampleFrames: {type: 'uint', size: 4},
-    sampleSize: {type: 'int', size: 2},
-    sampleRate: {type: 'bytes', size: 10},
-  },
-});
-
-// unsigned long offset;
-// unsigned long blockSize;
-const AIFFSoundDataStruct = new BufferStruct({
-  name: 'AIFFSoundData',
-  endian: 'big',
-  fields: {
-    offset: {type: 'uint', size: 4},
-    blockSize: {type: 'uint', size: 4},
-  },
-});
-
-function makeAIFFChunk(ckID, chunkData) {
-  if (ckID === 'COMM' && chunkData.length !== 18) {
-    throw new Error('invalid COMM chunk size:', chunkData.length);
-  }
-
-  return AIFFChunkStruct.serialize({
-    ckID: Buffer.from(ckID, 'utf8'),
-    ckSize: chunkData.length,
-    chunkData,
-  });
-}
-
-async function run() {
+async function bankToSource() {
   const ctlBuffer = await fs.readFile(
     '/Users/jfriend/.wine/drive_c/ultra/usr/lib/PR/soundbanks/GenMidiRaw.ctl'
     // '/Users/jfriend/.wine/drive_c/ultra/usr/lib/PR/soundbanks/sfx.ctl'
@@ -624,7 +249,10 @@ async function run() {
       );
     });
   });
-  // console.log('bankFile.instruments', bankFile.instruments);
+  console.log(
+    'bankFile.instruments',
+    Object.values(bankFile.instruments).slice(0, 4)
+  );
 
   bankFile.sounds = {};
   Object.values(bankFile.instruments).forEach((instrument) => {
@@ -632,7 +260,7 @@ async function run() {
       bankFile.sounds[offset] = ALSoundStruct.parse(ctlBuffer, offset);
     });
   });
-  // console.log('bankFile.sounds', bankFile.sounds);
+  console.log('bankFile.sounds', Object.values(bankFile.sounds).slice(0, 4));
 
   bankFile.envelopes = {};
   bankFile.keyMaps = {};
@@ -648,55 +276,37 @@ async function run() {
       bankFile.wavetables[sound.wavetable] ||
       ALWaveTableStruct.parse(ctlBuffer, sound.wavetable);
   });
-  // console.log('bankFile.envelopes', bankFile.envelopes);
-  // console.log('bankFile.keyMaps', bankFile.keyMaps);
-  // console.log('bankFile.wavetables', bankFile.wavetables);
+  console.log(
+    'bankFile.envelopes',
+    Object.values(bankFile.envelopes).slice(0, 4)
+  );
+  console.log('bankFile.keyMaps', Object.values(bankFile.keyMaps).slice(0, 4));
+  console.log(
+    'bankFile.wavetables',
+    Object.values(bankFile.wavetables).slice(0, 4)
+  );
   await Promise.all(
     Object.keys(bankFile.wavetables).map((offset) => {
       const aSampleTable = bankFile.wavetables[offset];
-      console.log(aSampleTable);
-      const wav = tblBuffer.slice(
+      const pcm16BitData = tblBuffer.slice(
         aSampleTable.base,
         aSampleTable.base + aSampleTable.len
       );
 
-      const nsamples = Math.floor(wav.length / 2);
-
-      const commChunk = makeAIFFChunk(
-        'COMM',
-        AIFFCommDataStruct.serialize({
-          numChannels: 1,
-          numSampleFrames: nsamples,
-          sampleSize: 16,
-          sampleRate: Buffer.from('400EAC44000000000000', 'hex'), // 44100hz
-        })
-      );
-
-      const soundDataChunk = makeAIFFChunk(
-        'SSND',
-        Buffer.concat([
-          AIFFSoundDataStruct.serialize({
-            offset: 0,
-            blockSize: 0,
-          }),
-          /*soundData*/ wav,
-        ])
-      );
-
-      return fs.writeFile(
-        'testwav/' + offset + '.aifc',
-
-        makeAIFFChunk(
-          'FORM',
-          Buffer.concat([
-            /*formType*/ Buffer.from('AIFF', 'utf8'),
-            commChunk,
-            soundDataChunk,
-          ])
-        )
-      );
+      const aiffFileContents = AIFF.serialize({
+        soundData: pcm16BitData,
+        numChannels: 1,
+        sampleSize: 16,
+        sampleRate: 44100,
+      });
+      return fs.writeFile('testwav/' + offset + '.aifc', aiffFileContents);
     })
   );
 }
 
-run();
+async function sourceToBank() {
+  const data = require('./piano-inst');
+  // TODO
+}
+
+// bankToSource();
