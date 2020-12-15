@@ -1,0 +1,45 @@
+instrument piano {
+  volume = 127;
+  pan = 64;
+  priority = 5;
+  tremType = 0;
+  tremRate = 0;
+  tremDepth = 0;
+  tremDelay = 0;
+  vibType = 0;
+  vibRate = 0;
+  vibDepth = 0;
+  vibDelay = 0;
+  bendRange = 200;
+  sound = pianoc2;
+}
+
+sound pianoc2 {
+  use("./sampleC2.aif");
+  envelope = piano;
+  keyMap = piano;
+  samplePan = 64;
+  sampleVolume = 127;
+}
+
+keymap piano {
+  velocityMin = 0;
+  velocityMax = 127;
+  keyMin = 0;
+  keyMax = 127;
+  keyBase = 48;
+  detune = 0;
+}
+
+envelope piano {
+  attackTime = 0;
+  decayTime = 4000000;
+  releaseTime = 200000;
+  attackVolume = 32512;
+  decayVolume = 0;
+}
+
+bank Piano {
+  sampleRate = 44100;
+  instrument [0] = piano;
+}

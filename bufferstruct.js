@@ -335,6 +335,7 @@ class BufferStruct {
 // simulates c struct union functionality, using the provided selectMember function
 // to choose which union member (BufferStruct) to interpret data as based on previously parsed fields.
 // requires that all union members have statically determinable size (eg. no arrays or dynamically sized bytes fields allowed)
+// when serializing, the maximum member size will be used
 class BufferStructUnion {
   constructor({members, selectMember}) {
     this.selectMember = selectMember;

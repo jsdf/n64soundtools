@@ -1,10 +1,12 @@
-const {Midi} = require('@tonejs/midi');
-var parseMidi = require('midi-file').parseMidi;
-var writeMidi = require('midi-file').writeMidi;
+#!/usr/bin/env node
 
 // midicvt takes an input midi file and filters out a bunch of unneeded event types,
 // saving the output as a (Type 0 MIDI) .seq file
-// todo: implement
+// todo: actually implement track merging
+
+const {Midi} = require('@tonejs/midi');
+var parseMidi = require('midi-file').parseMidi;
+var writeMidi = require('midi-file').writeMidi;
 const fs = require('fs');
 
 const arg = require('arg');

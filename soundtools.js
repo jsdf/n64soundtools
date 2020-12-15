@@ -2,9 +2,13 @@ const fs = require('fs').promises;
 
 const AIFF = require('./aiff');
 const {BufferStruct, BufferStructUnion} = require('./bufferstruct');
+const InstParserUtils = require('./instparserutils');
 
 const AL_ADPCM_WAVE = 0;
 const AL_RAW16_WAVE = 1;
+
+// flags fields determine whether to interpret references as offsets or pointers
+const FLAGS_REF_AS_OFFSET = 0;
 
 // typedef struct {
 //         s16     revision;
@@ -304,9 +308,244 @@ async function bankToSource() {
   );
 }
 
-async function sourceToBank() {
-  const data = require('./piano-inst');
-  // TODO
+function loadAIFFWaveData(file) {
+  const aiff = AIFF.parse(fs.readFileSync(file));
+
+  let ssndChunk;
+  aiff.formChunks.forEach((formChunk) => {
+    formChunk.localChunks.forEach((chunk) => {
+      if (chunk.ckID === 'SSND') {
+        ssndChunk = chunk;
+      }
+    });
+  });
+
+  if (!ssndChunk) {
+    throw new Error(`file ${file} does not contain SSND chunk`);
+  }
+  return ssndChunk.ssnd.soundData;
 }
 
-// bankToSource();
+function getSymbolField(obj, fieldName) {
+  if (!InstParserUtils.isSymbol(obj.value[fieldName])) {
+    throw new Error(
+      `Field '${fieldName}' not set on ${obj.type} ${obj.name} but it is required`
+    );
+  }
+
+  return InstParserUtils.getSymbolName(obj.value[fieldName]);
+}
+
+class FileTable {
+  insertBuffer(buffer) {
+    const location = this.size;
+    this.chunks.set(location, buffer);
+    this.size += buffer.length;
+    return location;
+  }
+  chunks = new Map();
+  size = 0;
+
+  replaceBuffer(offset, buffer) {
+    if (!this.chunks.has(offset)) {
+      throw new Error(
+        `tried to replace buffer at ${offset} but none found at that offset`
+      );
+    }
+    const expectedLength = this.chunks.get(offset).length;
+    if (expectedLength !== buffer.length) {
+      throw new Error(
+        `replacing buffer of length ${expectedLength} with incorrect buffer of length ${buffer.length} at ${offset}`
+      );
+    }
+  }
+
+  build() {
+    return Buffer.concat(this.chunks);
+  }
+}
+
+class ALBankFileWriter {
+  objects = new Map(
+    Object.keys(InstParserUtils.schemas).map((key) => [key, new Map()])
+  );
+
+  ctl = new FileTable();
+  tbl = new FileTable();
+
+  constructor(defs) {
+    defs.forEach((obj) => {
+      this.insertObject(obj);
+      if (obj.type === 'sound') {
+        // .inst files reference wave files with use() statement rather than a
+        // def block of their own, so we create an object to represent them
+        this.insertObject({
+          type: 'wavetable',
+          name: obj.value.file,
+          value: {file: obj.value.file},
+        });
+      }
+    });
+  }
+
+  insertObject(obj) {
+    const objectsForType = this.objects.get(obj.type);
+    if (objectsForType.has(obj.name)) {
+      throw new Error(`${obj.type} ${obj.name} inserted twice`);
+    }
+
+    objectsForType.set(obj.name, obj);
+  }
+
+  dependOnFieldReferencedObject({type, field, source}) {
+    const referencedSymbolName = getSymbolField(obj, field);
+    if (!this.objects.get(type).has(referencedSymbolName)) {
+      throw new Error(
+        `${type} '${referencedSymbolName}' referenced from ${source.type} '${source.name}' but no ${type} exists with that name`
+      );
+    }
+
+    this.dependOnObject({type, name: referencedSymbolName});
+  }
+
+  dependOnReferencedObject({type, field, reference, source}) {
+    if (!InstParserUtils.isSymbol(reference)) {
+      throw new Error(
+        `Invalid reference ${JSON.stringify(
+          reference
+        )} in field '${field}' on ${source.type} ${source.name}`
+      );
+    }
+
+    const name = InstParserUtils.getSymbolName(reference);
+    if (!this.objects.get(type).has(name)) {
+      throw new Error(
+        `${type} '${name}' referenced from ${source.type} '${source.name}' but no ${type} exists with that name`
+      );
+    }
+
+    this.dependOnObject({type, name});
+  }
+
+  dependOnObject({type, name}) {
+    if (!this.objects.get(type).has(name)) {
+      throw new Error(
+        `${type} '${name}' required but no ${type} exists with that name`
+      );
+    }
+
+    return this.ctl.insertBuffer(
+      this.addObjectToOutputFiles(this.objects.get(type).get(name))
+    );
+  }
+
+  addObjectToOutputFiles(obj) {
+    switch (obj.type) {
+      case 'bank':
+        return ALBankStruct.serialize({
+          ...obj.value,
+          flags: FLAGS_REF_AS_OFFSET,
+          soundCount: obj.value.instruments.length,
+          instArray: obj.value.instruments.map((instrumentRef) =>
+            this.dependOnReferencedObject({
+              reference: instrumentRef,
+              type: 'instrument',
+              field: 'instruments',
+              source: obj,
+            })
+          ),
+        });
+      case 'instrument':
+        return ALInstrumentStruct.serialize({
+          ...obj.value,
+          flags: FLAGS_REF_AS_OFFSET,
+          soundCount: obj.value.sounds.length,
+          soundArray: obj.value.sounds.map((soundRef) =>
+            this.dependOnReferencedObject({
+              reference: soundRef,
+              type: 'sound',
+              field: 'sounds',
+              source: obj,
+            })
+          ),
+        });
+      case 'keymap':
+        return ALKeyMapStruct.serialize(obj.value);
+      case 'envelope':
+        return ALEnvelopeStruct.serialize(obj.value);
+      case 'wavetable':
+        const waveData = loadAIFFWaveData(obj.value.file);
+        const waveTblOffset = this.tbl.insertBuffer(waveData);
+
+        return ALWaveTableStruct.serialize({
+          base: waveTblOffset,
+          len: waveData.length,
+          type: AL_RAW16_WAVE, // TODO: support AL_ADPCM_WAVE
+          flags: FLAGS_REF_AS_OFFSET,
+          waveInfo: {
+            loop: 0,
+            // book: AL_ADPCM_WAVE only
+          },
+        });
+      case 'sound':
+        return ALSoundStruct.serialize({
+          envelope: this.dependOnFieldReferencedObject({
+            type: 'envelope',
+            source: obj,
+            field: 'envelope',
+          }),
+          keyMap: this.dependOnFieldReferencedObject({
+            type: 'keymap',
+            source: obj,
+            field: 'keymap',
+          }),
+          wavetable: this.dependOnObject({
+            type: 'wavetable',
+            name: obj.value.file,
+          }),
+          samplePan: obj.value.pan,
+          sampleVolume: obj.value.volume,
+          flags: FLAGS_REF_AS_OFFSET,
+        });
+      default:
+        throw new Error(`unknown object type: ${obj.type}`);
+        break;
+    }
+  }
+
+  writeBankFile(filePrefix) {
+    if (this.ctl.size !== 0) {
+      throw new Error(`bank files built twice`);
+    }
+    const banks = Array.from(this.objects.get('bank').values());
+    function makeHeader(banks) {
+      return ALBankFileStruct.serialize({
+        revision: Buffer.from([0x42, 0x31]),
+        bankCount: banks.length,
+        bankArray: banks,
+      });
+    }
+    // make header with placeholders for bank offsets
+    // insert as placeholder
+    let bankFileHeader = makeHeader(banks.map((_) => 0));
+    this.ctl.insertBuffer(bankFileHeader);
+    // insert all the referenced file parts
+    const banksOffsets = banks.map((bank) => this.dependOnObject(bank));
+    // replace header with corrected offsets
+    bankFileHeader = makeHeader(banksOffsets);
+    this.ctl.replaceBuffer(0, bankFileHeader);
+
+    fs.writeFileSync(filePrefix + '.ctl', this.ctl.build());
+    fs.writeFileSync(filePrefix + '.tbl', this.tbl.build());
+  }
+}
+
+async function sourceToBank(defs) {
+  const fileWriter = new ALBankFileWriter(defs);
+  return fileWriter;
+}
+
+module.exports = {
+  bankToSource,
+  sourceToBank,
+};

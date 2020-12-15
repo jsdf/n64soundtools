@@ -12,5 +12,8 @@
     "@tonejs/midi": "^2.0.25",
     "arg": "^5.0.0",
     "midi-file": "^1.1.2"
+  },
+  "devDependencies": {
+    "pegjs": "^0.10.0"
   }
 }
