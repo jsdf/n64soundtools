@@ -1,5 +1,6 @@
 const fs = require('fs');
 const {performance} = require('perf_hooks');
+const {Midi} = require('@tonejs/midi');
 
 global.performance = performance;
 
@@ -10,6 +11,8 @@ const arg = require('arg');
 const args = arg({
   // Types
   '--help': Boolean,
+  '--gm': Boolean, // hacks to act like general midi device
+  '--verbose': Boolean,
   '--midiin': String, // --midiin <string> or --midiin=<string>
   '--midiout': String, // --midiout <string> or --midiout=<string>
   '--channelfilter': String, // --channelfilter 2 or --channelfilter="1, 3, 4"
@@ -28,7 +31,11 @@ async function run() {
   if (args._[0]) {
     const Player = require('./soundtool-ui/src/player');
     const midiData = await fs.promises.readFile(args._[0]);
-    player = new Player(midiData, channelFilter);
+    player = new Player(
+      new Midi(midiData).toJSON(),
+      channelFilter,
+      args['--gm']
+    );
   } else if (args['--midiin']) {
     if (args['--channelfilter']) {
       throw new Error('--channelfilter not supported with --midiout');
@@ -64,6 +71,13 @@ async function runWithEverdriveOut() {
       process.stdout.write(line + '\n');
     });
   }
+  if (DEV) {
+    const disassembleStacktrace = require('../../ed64log/ed64logjs/disassembleStacktrace');
+    disassembleStacktrace.attachStackTraceListener(
+      dbgif,
+      'sgisoundtest/soundtest.out'
+    );
+  }
 
   function sendPendingEvents(events) {
     // play to n64
@@ -89,8 +103,10 @@ async function runWithEverdriveOut() {
     if (packet.length > 512) {
       throw new Error(`invalid packet size ${packet.length}`);
     }
-    console.log('messages', eventMessagesTruncated);
-    console.log('sendPacket', packet);
+    if (args['--verbose']) {
+      console.log('messages', eventMessagesTruncated);
+      console.log('sendPacket', packet);
+    }
     dbgif.sendPacket(packet);
 
     // return any leftover events which didn't fit in this packet
@@ -170,4 +186,7 @@ process.on('SIGINT', function () {
   process.exit(0);
 });
 
-run();
+run().catch((err) => {
+  console.error(err);
+  process.exit(1);
+});

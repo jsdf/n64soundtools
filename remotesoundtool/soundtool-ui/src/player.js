@@ -1,5 +1,3 @@
-const {Midi} = require('@tonejs/midi');
-
 const {midiCCs} = require('./midicc');
 
 const allowedCCs = new Set([
@@ -49,24 +47,15 @@ class Player {
   startTime = 0;
   timeWindowLookahead = 0;
   _nextEvent = 0;
-  constructor(midiData, channelFilter) {
-    const midi = new Midi(midiData);
-    this.events = this._renderMIDIStream(midi, channelFilter);
-    // console.log(this.events);
+
+  constructor(midi, channelFilter, generalMIDI) {
+    this.events = this._renderMIDIStream(midi, channelFilter, generalMIDI);
   }
-  _renderMIDIStream(midi, channelFilter) {
+  _renderMIDIStream(midi, channelFilter, generalMIDI) {
     const events = [];
     midi.tracks.forEach((track) => {
       if (channelFilter && !channelFilter.has(track.channel)) return;
-      console.log(
-        'channel',
-        track.channel,
-        'instrument',
-        track.instrument,
-        'name',
-        track.name
-      );
-      if (track.channel !== 9) {
+      if (!generalMIDI || track.channel !== 9) {
         events.push({
           time: Math.floor(Math.random() * 1000),
           type: 'programChange',
@@ -74,7 +63,6 @@ class Player {
           data: Buffer.from([
             0xc0 | track.channel,
             track.instrument.number | 0,
-            0,
           ]),
         });
       }
@@ -106,7 +94,6 @@ class Player {
 
       Object.values(track.controlChanges).forEach((ccEventArray, key) => {
         if (!allowedCCs.has(midiCCs[key])) {
-          console.log('dropping cc ', key, midiCCs[key], ccEventArray);
           return;
         }
         ccEventArray.forEach((ccEvent) => {
@@ -145,8 +132,6 @@ class Player {
 
   getPendingEvents(timeWindow) {
     const time = performance.now() - this.startTime;
-
-    // console.log('getting pending evnts at', time);
 
     const eventsToSend = [];
 

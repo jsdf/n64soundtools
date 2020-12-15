@@ -1,18 +1,24 @@
-# ed64 debugger
+# remote sound tool
 
+stream midi to an n64
 
 ```
 # in this directory, run
 npm install # just once after cloning this repo
 
-# start the debugger for a particular game binary
-OBJDUMP_PATH="mips64-elf-objdump" APP_BINARY_PATH="/path/to/binary.out" npm start
+# use the cli
+node cli somemidifile.mid
+
+# or start the ui
+cd soundtool-ui/
+npm install # just once after cloning this repo
+npm start
 ```
 
 
-## development instructions
+## build & deploy the rom
 
 ```
-# in example/ dir
-DEBUGGER=1 ./build.sh && DEBUGGER=1 ./deploy.sh
+# in sgisoundtool/ dir
+./build.sh && ./deploy.sh
 ```

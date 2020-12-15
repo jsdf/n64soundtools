@@ -15,18 +15,12 @@
     "@serialport/parser-byte-length": "^9.0.0",
     "@tonejs/midi": "^2.0.25",
     "arg": "^5.0.0",
-    "ed64logjs": "^1.0.1",
-    "elf-tools": "^1.1.1",
-    "express": "^4.17.1",
-    "get-port": "^5.1.1",
+    "ed64logjs": "^1.0.1",  
     "jzz": "^1.1.6",
     "jzz-midi-smf": "^1.4.2",
     "midi-message-parser": "^2.0.1",
     "serialport": "^9.0.0",
     "socket.io": "^2.3.0",
     "socket.io-client": "^2.3.0"
-  },
-  "devDependencies": {
-    "is-port-reachable": "^3.0.0"
   }
 }

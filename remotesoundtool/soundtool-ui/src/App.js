@@ -1,51 +1,124 @@
-import React, {useState, useEffect, useLayoutEffect, useRef} from 'react';
+import React, {
+  useState,
+  useEffect,
+  useLayoutEffect,
+  useRef,
+  useCallback,
+  useMemo,
+} from 'react';
 import './App.css';
+import Details from './Details';
+import {Midi} from '@tonejs/midi';
+import MidiTrackEditor from './MidiTrackEditor';
+import SelectWithLabel from './SelectWithLabel';
+import useStateWithUndoHistory from './useStateWithUndoHistory';
 
 import io from 'socket.io-client';
 const Player = require('./player');
 
 var searchParams = new URLSearchParams(window.location.search);
 
-if (!searchParams.has('port')) {
+const socketPort = parseInt(
+  searchParams.get('port') || parseInt(window.location.port)
+);
+
+if (!socketPort) {
   window.alert(`'port' url query param required`);
   throw new Error(`'port' url query param required`);
 }
 
-const socketPort = parseInt(searchParams.get('port'));
+function useKeyboardCommands(commands) {
+  const commandsRef = useRef(commands);
+  commandsRef.current = commands;
 
-// a synchronously inspectable promise wrapper
-class Future {
-  state = 'pending';
-  value = null;
-  error = null;
+  useEffect(() => {
+    const isMac = navigator.platform.startsWith('Mac');
+    function onKeyDown(e) {
+      const matching = commandsRef.current.find(
+        (cmd) =>
+          e.key.toLowerCase() === cmd.key.toLowerCase() &&
+          (isMac
+            ? e.metaKey === Boolean(cmd.cmdCtrl)
+            : e.ctrlKey === Boolean(cmd.cmdCtrl)) &&
+          e.shiftKey === Boolean(cmd.shift) &&
+          e.altKey === Boolean(cmd.alt)
+      );
 
-  constructor(promise) {
-    this.promise = promise;
-    promise
-      .then((value) => {
-        this.state = 'fulfilled';
-        this.value = value;
-      })
-      .catch((err) => {
-        this.state = 'rejected';
-        this.error = err;
-      });
-  }
-}
-
-class RequestCache {
-  items = new Map();
-
-  get(url, makeRequest) {
-    if (!this.items.has(url)) {
-      this.items.set(url, new Future(makeRequest(url)));
+      if (matching) matching.exec(e);
     }
 
-    return this.items.get(url);
-  }
+    document.addEventListener('keydown', onKeyDown);
+    return () => {
+      document.removeEventListener('keydown', onKeyDown);
+    };
+  }, []);
 }
 
-const requestCache = new RequestCache();
+function initMidiFromData(midiData) {
+  const parsed = new Midi(midiData).toJSON();
+
+  parsed.tracks.forEach((track) => {
+    track.notes.forEach((note, index) => {
+      note.id = index;
+    });
+  });
+  return parsed;
+}
+
+function MidiPortSelector({direction, port, onChange}) {
+  const [ports, setPorts] = useState([]);
+  const mountedRef = useRef(false);
+  const midiAccessRef = useRef(null);
+
+  useEffect(() => {
+    mountedRef.current = true;
+
+    function onStateChange() {
+      if (mountedRef.current && midiAccessRef.current) {
+        setPorts(
+          midiAccessRef.current[direction === 'in' ? 'inputs' : 'outputs']
+        );
+        if (
+          !midiAccessRef.current[direction === 'in' ? 'inputs' : 'outputs'].get(
+            port?.id
+          )
+        ) {
+          onChange(null);
+        }
+      }
+    }
+
+    navigator.requestMIDIAccess().then((midiAccess) => {
+      midiAccessRef.current = midiAccess;
+      midiAccess.addEventListener('statechange', onStateChange);
+      if (mountedRef.current) {
+        const initialPorts =
+          midiAccess[direction === 'in' ? 'inputs' : 'outputs'];
+        setPorts(initialPorts);
+        const ports = [...initialPorts.values()];
+        if (ports.length) {
+          onChange(ports[0]);
+        }
+      }
+    });
+
+    return () => {
+      mountedRef.current = false;
+      if (midiAccessRef.current) {
+        midiAccessRef.current.removeEventListener('statechange', onStateChange);
+      }
+    };
+  }, []);
+
+  return (
+    <SelectWithLabel
+      label="Midi Out"
+      options={[...ports.values()].map((v) => ({value: v.id, label: v.name}))}
+      value={port?.id}
+      onChange={(id) => onChange(ports.get(id))}
+    />
+  );
+}
 
 function Log({logItems}) {
   const logEl = useRef(null);
@@ -61,14 +134,6 @@ function Log({logItems}) {
       ))}
     </div>
   );
-}
-
-async function getMidiOutPort() {
-  const midiAccess = await navigator.requestMIDIAccess();
-  const out = [...midiAccess.outputs.values()].find(
-    (out) => out.name === 'IAC Driver WebMidi'
-  );
-  return out;
 }
 
 function App() {
@@ -113,52 +178,130 @@ function App() {
     };
   }, []);
 
+  const historyRef = useRef([]);
+  const [
+    midiState,
+    setMidiStateWithUndo,
+    midiStateHistory,
+  ] = useStateWithUndoHistory(null, {
+    // prevent undoing back to null state
+    validateHistoryChange: (state) => state != null,
+  });
+  const [outPort, setOutPort] = useState(null);
+  const playerAPIRef = useRef(null);
+
+  useEffect(() => {
+    if (!midiState) return;
+    if (!outPort) return;
+    const player = new Player(midiState);
+
+    window.eventLog = [];
+
+    function tick() {
+      setTimeout(() => {
+        const now = performance.now();
+        const events = player.getPendingEvents(16);
+
+        events.forEach((event) => {
+          const midiMessage = Array.from(event.data);
+          const prevEvent = window.eventLog[window.eventLog.length - 1];
+          window.eventLog.push({
+            scheduleDelta: player.startTime + event.time - now,
+            sincePrevEvent: prevEvent ? prevEvent.time - event.time : null,
+            ...event,
+          });
+          outPort.send(midiMessage, player.startTime + event.time);
+        });
+        if (player.playing) {
+          tick();
+        }
+      }, 1);
+    }
+
+    const playerAPI = {
+      play: () => {
+        console.log('playing');
+        tick();
+        player.play();
+      },
+      stop: () => player.stop(),
+    };
+
+    playerAPIRef.current = playerAPI;
+
+    return () => {
+      playerAPI.stop();
+    };
+  }, [midiState, outPort]);
+
   useEffect(() => {
     async function run() {
       const midiFile = await fetch('/b1n12ft.mid').then((res) =>
         res.arrayBuffer()
       );
-      const outPort = await getMidiOutPort();
-
-      const player = new Player(midiFile);
-
-      window.eventLog = [];
-
-      function tick() {
-        setTimeout(() => {
-          const now = performance.now();
-          const events = player.getPendingEvents(16);
-
-          events.forEach((event) => {
-            const midiMessage = Array.from(event.data);
-            const prevEvent = window.eventLog[window.eventLog.length - 1];
-            window.eventLog.push({
-              scheduleDelta: player.startTime + event.time - now,
-              sincePrevEvent: prevEvent ? prevEvent.time - event.time : null,
-              ...event,
-            });
-            outPort.send(midiMessage, player.startTime + event.time);
-          });
-          if (player.playing) {
-            tick();
-          }
-        });
-      }
-      tick();
-
-      // player.on('pendingEvents', (events) => {});
-      console.log('playing');
-      player.play();
+      setMidiStateWithUndo(initMidiFromData(midiFile), {updateType: 'commit'});
     }
 
     run();
-  }, []);
+  }, [setMidiStateWithUndo]);
+
+  const setEventsForTrack = useCallback(
+    (updater, thisTrackIdx, updateType) => {
+      setMidiStateWithUndo(
+        (s) => {
+          return {
+            ...s,
+            tracks: s.tracks.map((track, trackIdx) => {
+              const updatedNotes =
+                typeof updater === 'function' ? updater(track.notes) : updater;
+              if (trackIdx === thisTrackIdx) {
+                return {...track, notes: updatedNotes};
+              }
+              return track;
+            }),
+          };
+        },
+        {updateType}
+      );
+    },
+    [setMidiStateWithUndo]
+  );
+
+  useKeyboardCommands(
+    useMemo(
+      () => [
+        {
+          key: 'z',
+          cmdCtrl: true,
+          exec() {
+            midiStateHistory.undo();
+          },
+        },
+        {
+          key: 'z',
+          cmdCtrl: true,
+          shift: true,
+          exec() {
+            midiStateHistory.redo();
+          },
+        },
+        {
+          key: 'y',
+          cmdCtrl: true,
+          exec() {
+            midiStateHistory.redo();
+          },
+        },
+      ],
+      [midiStateHistory]
+    )
+  );
 
   if (!state) {
     return <div style={{margin: 100}}>awaiting initial state...</div>;
   }
 
-  const api = apiRef.current;
+  console.log('rerender');
 
   return (
     <div>
@@ -167,16 +310,35 @@ function App() {
           <div key={i}>{message}</div>
         ))}
       </div>
-      <div style={{display: 'flex'}}>
-        <div className="pane-log">
-          <h2>log</h2>
-          <Log logItems={logItems} />
-        </div>
+      <div>
+        <MidiPortSelector
+          direction="out"
+          port={outPort}
+          onChange={setOutPort}
+        />
       </div>
-      <details>
-        <summary>state</summary>
+      <div style={{position: 'relative'}}>
+        {midiState
+          ? midiState.tracks.map((track, i) => (
+              <div key={i}>
+                inst: {track.instrument.number}
+                <MidiTrackEditor
+                  events={track.notes}
+                  setEvents={(updater, updateType) =>
+                    setEventsForTrack(updater, i, updateType)
+                  }
+                />
+              </div>
+            ))
+          : 'select midi file'}
+      </div>
+
+      <Details summary="Log" startOpen={true}>
+        <Log logItems={logItems} />
+      </Details>
+      <Details summary="State">
         <pre>{JSON.stringify(state, null, 2)}</pre>
-      </details>
+      </Details>
     </div>
   );
 }

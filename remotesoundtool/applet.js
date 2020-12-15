@@ -1,29 +1,14 @@
-#!/usr/bin/env node
-
-const http = require('http');
-const util = require('util');
-const exec = util.promisify(require('child_process').exec);
-const spawn = require('child_process').spawn;
-const getPort = require('get-port');
 const express = require('express');
 const socketio = require('socket.io');
 const fs = require('fs');
-const path = require('path');
 
 const DEV = process.env.NODE_ENV === 'development';
 
 const DebuggerInterface = DEV
-  ? require('../ed64logjs/dbgif')
+  ? require('../../ed64log/ed64logjs/dbgif')
   : require('ed64logjs/dbgif');
 
-const uiRoot = 'soundtool-ui/dist';
-
-const app = express();
-const server = http.Server(app);
-const io = socketio(server);
-app.use(express.static(uiRoot));
-
-class Server {
+class Applet {
   dbgif = null;
 
   state = {
@@ -38,7 +23,7 @@ class Server {
       {encoding: 'utf8'},
       () => {}
     );
-    io.emit('state', this.state);
+    this.io.emit('state', this.state);
   }
 
   handleError(message, error) {
@@ -48,7 +33,7 @@ class Server {
 
   attachDebuggerInferfaceHandlers(dbgif) {
     dbgif.on('log', (line) => {
-      io.emit('log', line);
+      this.io.emit('log', line);
     });
     dbgif.on('error', (err) => {
       this.handleError('debugger interface error', err);
@@ -81,13 +66,15 @@ class Server {
     });
   }
 
-  async startServer(httpPort) {
+  async attachToApp(app, server) {
     const dbgif = new DebuggerInterface();
     this.dbgif = dbgif;
 
+    this.io = socketio(server);
+
     try {
-      // await dbgif.start();
-      // this.attachDebuggerInferfaceHandlers(dbgif);
+      await dbgif.start();
+      this.attachDebuggerInferfaceHandlers(dbgif);
     } catch (err) {
       console.error(err);
       if (DEV) {
@@ -112,38 +99,10 @@ class Server {
       }
     }
 
-    server.listen(httpPort);
-
-    app.get('/', (req, res) => {
-      if (DEV) {
-        res.redirect(301, `http://127.0.0.1:3000/?port=${httpPort}`);
-      } else {
-        res.sendFile(path.join(__dirname, uiRoot, 'index.html'));
-      }
-    });
-
-    io.on('connection', (socket) => {
+    this.io.on('connection', (socket) => {
       this.attachClientHandlers(socket);
     });
-
-    console.log(`server running at http://127.0.0.1:${httpPort}`);
   }
 }
 
-getPort()
-  .then(async (httpPort) => {
-    await new Server().startServer(httpPort);
-    return httpPort;
-  })
-  .then(async (httpPort) => {
-    if (!DEV) {
-      return;
-    }
-
-    console.log('opening ui');
-    exec(`open http://127.0.0.1:${httpPort}/`);
-  })
-  .catch((err) => {
-    console.error(err);
-    process.exit(1);
-  });
+module.exports = Applet;
