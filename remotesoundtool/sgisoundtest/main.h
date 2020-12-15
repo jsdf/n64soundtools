@@ -1,9 +1,3 @@
-/*
-   main.h
-
-   Copyright (C) 1997-1999, NINTENDO Co,Ltd.	
-*/
-
 #ifndef MAIN_H
 #define MAIN_H
 

@@ -1,6 +1,3 @@
-# 	NuSYSTEM samples nu3 Makefile
-#       Copyright (C) 1997-1999, NINTENDO Co,Ltd.
-
 include $(ROOT)/usr/include/make/PRdefs
 
 # The directory which has the include file and library of NuSYSTEM
@@ -36,9 +33,9 @@ LDFLAGS =	$(MKDEPOPT) -L$(LIB) -L$(NUSYSLIBDIR) $(NUAUDIOLIB) -lnusys_d -lgultra
 
 OPTIMIZER =	-g
 
-APP =		nu3.out
+APP =		soundtest.out
 
-TARGETS =	nu3.n64
+TARGETS =	soundtest.n64
 
 HFILES =	main.h graphic.h segment.h
 

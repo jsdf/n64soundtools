@@ -1,9 +1,3 @@
-/*
-   stage00.c 
-
-   Copyright (C) 1997-1999, NINTENDO Co,Ltd.
-*/
-
 #include <assert.h>
 #include <nusys.h>
 #include "main.h"
@@ -38,6 +32,7 @@ void soundCheck(void);
 
 #define MAX_SEQ_NO 2
 #define MAX_SEQ_LENGTH  50000
+#define NUM_CHANNELS 16
 
 ALBankFile*  seqPlayerBankFile; // bank (samples) file for playing seqs
 ALSeqFile* seqFile; // sequence bank header (w/ seq list) in audio heap
@@ -64,12 +59,22 @@ ALSeqpConfig  seqpConfig = {
   NULL
 };
 
-u32 seqStartTime = 0;
+static u32 seqStartTime = 0;
+
+static u8 chVolumes[NUM_CHANNELS];
+static u8 chPrograms[NUM_CHANNELS];
 
 
 int getMaxSeqNo() { 
   return seqFile->seqCount-1;
 }
+
+// debug window enum
+#define DBG_CHANNELS 0
+#define DBG_EVENTS 1
+static int debugMidiEvents = TRUE;
+static int debugMidiEventsParsed = TRUE;
+static int debugMidiChannels = TRUE;
 
 // load a sample bank file for a seq into the audio heap, then assign it to the seq player
 // bank_addr: bank (.ctl) addr in rom
@@ -117,6 +122,7 @@ void seqPlayerSetNo(u32 seq_no)
 {
   s32 dataLen;
   u8* dataOffset;
+  int i;
 
 #ifdef NU_DEBUG
     if(seq_no >=  seqFile->seqCount){
@@ -139,13 +145,14 @@ void seqPlayerSetNo(u32 seq_no)
   // set sequence player active seq to new seq state struct
   alSeqpSetSeq(seqPlayer, seqState);
 
-  alSeqpSetVol(seqPlayer, 0x7fff/2); // 50% initial vol
-
+  alSeqpSetVol(seqPlayer, 0x7fff/2); // 50% initial vol  
+ 
   // alSeqpSetTempo(seqPlayer, 120); // set default tempo so we don't divide by 0
 }
 
 // load sample bank and seq bank index at startup
 void initSeqPlayerData() {
+  int i;
   seqpConfig.heap = &nuAuHeap;
   // init sequence player state
   alSeqpNew(seqPlayer, &seqpConfig);
@@ -162,7 +169,7 @@ void initSeqPlayerData() {
   seqData = (u8*)nuAuHeapAlloc(MAX_SEQ_LENGTH);
 
   seqPlayerSetNo(0); // load the seq data and attach to seqPlayer
-  alSeqpPlay(seqPlayer);  
+  alSeqpPlay(seqPlayer);
 }
 
 #define USB_BUFFER_SIZE 128
@@ -185,6 +192,37 @@ static char escChar(char in) {
   return '_';
 }
 
+typedef enum MidiEventType {
+  ControlChangeMidiEvent,
+  ProgramChangeMidiEvent,
+  NoteOnMidiEvent,
+  NoteOffMidiEvent,
+  OtherMidiEvent,
+} MidiEventType;
+
+char* MidiEventTypeStrings[] = {
+  "cc     ",
+  "progch ",
+  "noteon ",
+  "noteoff", 
+  "other  "
+};
+
+
+MidiEventType getMidiEventType(status) {
+  switch (status >> 4) {
+    case 0xb:
+      return ControlChangeMidiEvent;
+    case 0xc:
+      return ProgramChangeMidiEvent;
+    case 0x9:
+      return NoteOnMidiEvent;
+    case 0x8:
+      return NoteOffMidiEvent;
+  }
+  return OtherMidiEvent;
+}
+
 void playMidi(u8 midiMsgStart[], u32 seqTimeOffset) {
   u32 *midiMsgTimePtr = (u32*)((void *)midiMsgStart);
   u32 midiMsgTime = *midiMsgTimePtr;
@@ -195,12 +233,30 @@ void playMidi(u8 midiMsgStart[], u32 seqTimeOffset) {
   s32 tempo = alSeqpGetTempo(seqPlayer);
   // s32 tempo = 120;
   u32 ticks = alSeqSecToTicks(seqState, seqTimeOffsetUSRel/1000000.0f, tempo);
+  MidiEventType eventType = getMidiEventType(midiMsgStatus);
+  u32 channel = midiMsgStatus & 0xf;
+  u8 volBeforeEvent = 0;
 
-  // DBGPRINT("midimsg tempo=%d midi=%x%x%x\n",tempo, midiMsg->status, midiMsg->data1, midiMsg->data2);
+  if (eventType == ProgramChangeMidiEvent)  {
+    volBeforeEvent = alSeqpGetChlVol(seqPlayer, channel);
+  }
+
   DBGPRINT("midimsg tempo=%d seqTimeOffsetUSRel=%d midi=%x %x %x\n",tempo,seqTimeOffsetUSRel, midiMsgStatus, midiMsgData1, midiMsgData2);
-  nuDebConPrintf(0, "0x%02x%02x%02x @ %ums\n", midiMsgStatus, midiMsgData1, midiMsgData2, midiMsgTime/1000); 
+  if (debugMidiEvents) {
+    if (debugMidiEventsParsed) {
+      char* eventTypeStr = MidiEventTypeStrings[eventType];
+      nuDebConPrintf(DBG_EVENTS, "ch%2u %s %3u %3u\n", channel, eventTypeStr, midiMsgData1, midiMsgData2); 
+    } else {
+      nuDebConPrintf(DBG_EVENTS, "0x%02x%02x%02x @ %ums\n", midiMsgStatus, midiMsgData1, midiMsgData2, midiMsgTime/1000); 
+    }
+  }
 
   alSeqpSendMidi(seqPlayer, ticks, midiMsgStatus, midiMsgData1, midiMsgData2);
+
+  if (eventType == ProgramChangeMidiEvent)  {
+    // fix volume after program change 
+    alSeqpSendMidi(seqPlayer, ticks, (0xb<<4) + channel, 7, volBeforeEvent);
+  }
           
 }
 
@@ -257,13 +313,26 @@ int ed64SoundtestUsbListener() {
 /* The initialization of stage 0 */
 void initStage00(void)
 {
+  int i = 0;
   triPos_x = 0.0;
   triPos_y = 0.0;
   theta = 0.0;
   initSeqPlayerData();
 
-  nuDebConClear(0);
-  nuDebConWindowPos(0, 4, 4);
+
+  // cols 0-19
+  nuDebConClear(DBG_EVENTS);
+  nuDebConWindowPos(DBG_EVENTS, 3, 3);
+  // nuDebConWindowSize(DBG_EVENTS, 20-4, 30-4);
+  // cols 20-40
+  nuDebConClear(DBG_CHANNELS);
+  nuDebConWindowPos(DBG_CHANNELS, 3, 3);
+  // nuDebConWindowSize(DBG_CHANNELS, 20-4, 30-4);
+  
+  for (i = 0 ; i < NUM_CHANNELS; i++) {
+    chVolumes[i] = 0;
+    chPrograms[i] = 0;
+  }
 }
 
 static int initialized = FALSE;
@@ -275,6 +344,7 @@ void makeDL00(void)
 {
   Dynamic* dynamicp;
   char conbuf[20]; 
+  int i;
 
   /* Specify the display list buffer */
   dynamicp = &gfx_dynamic[gfx_gtask_no];
@@ -337,6 +407,13 @@ void makeDL00(void)
       nuDebConTextPos(0,9,24);
       nuDebConCPuts(0, "Controller1 not connect");
     }
+
+  if (debugMidiChannels) {
+    for (i = 0; i < NUM_CHANNELS; i++){ 
+      nuDebConTextPos(DBG_CHANNELS, 21, 2 + i);
+      nuDebConPrintf(DBG_CHANNELS, "ch%2d v%3d p%3d\n", i, chVolumes[i], chPrograms[i]);
+    }
+  }
     
   /* Draw characters on the frame buffer */
   nuDebConDisp(NU_SC_SWAPBUFFER);
@@ -350,6 +427,7 @@ void makeDL00(void)
 void updateGame00(void)
 {  
   static float vel = 1.0;
+  int i;
 
   /* The game progressing process for stage 0 */
   nuContDataGetEx(contdata,0);
@@ -374,6 +452,11 @@ void updateGame00(void)
     theta += vel * 3.0;
   else
     theta += vel;
+
+  for(i = 0; i < NUM_CHANNELS; i++) {
+    chVolumes[i] = alSeqpGetChlVol(seqPlayer, i);
+    chPrograms[i] = alSeqpGetChlProgram(seqPlayer, i);
+  }
 
   ed64SoundtestUsbListener();
 }

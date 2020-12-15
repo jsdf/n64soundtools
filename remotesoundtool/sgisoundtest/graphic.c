@@ -1,12 +1,3 @@
-/*
-   graphic.c
-
-   The general graphic routine (the initialization and clear the frame 
-   buffer) and the definition of the external variable 
-
-   Copyright (C) 1997-1999, NINTENDO Co,Ltd.	
-*/
-
 #include <nusys.h>
 #include "graphic.h"
 

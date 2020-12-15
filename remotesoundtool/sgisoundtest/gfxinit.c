@@ -1,11 +1,3 @@
-/*
-   gfxinit.c
-   
-   The display list for the initialization of graphic 
-
-   Copyright (C) 1997-1999, NINTENDO Co,Ltd.
-*/
-
 #include <nusys.h>
 #include "graphic.h"
 

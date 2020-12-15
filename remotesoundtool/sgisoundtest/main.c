@@ -1,11 +1,3 @@
-/*
-   main.c
-
-   NuSYSTEM sample nu3 
-
-   Copyright (C) 1997-1999, NINTENDO Co,Ltd.	
-   */
-
 #include <nusys.h>
 #include "main.h"
 #include "segment.h"

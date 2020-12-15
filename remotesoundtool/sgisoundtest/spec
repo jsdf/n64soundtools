@@ -8,9 +8,7 @@
   	0x80025c00  codesegment
 	      :  
   	0x8030F800  Audio Heap
-  	0x8038F800  cfb 16b 3buffer (size 320*240*2*3)
-
-        Copyright (C) 1997-1999, NINTENDO Co,Ltd.
+  	0x8038F800  cfb 16b 3buffer (size 320*240*2*3) 
 */
 
 #include <nusys.h>
@@ -70,7 +68,7 @@ beginseg
 endseg
 
 beginwave
-	name	"nu3"
+	name	"soundtest"
 	include	"code"
 	include "miditable"
 	include "midibank"
