@@ -28,6 +28,7 @@ laststate.json
 *.aif
 *.aifc
 *.aiff
+*.mid
 
 *.tbl
 *.ctl
