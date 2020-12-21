@@ -2,9 +2,7 @@
 
 // midicvt takes an input midi file and filters out a bunch of unneeded event types,
 // saving the output as a (Type 0 MIDI) .seq file
-// todo: actually implement track merging
 
-// const {Midi: ToneMidi} = require('@tonejs/midi');
 var parseMidi = require('midi-file').parseMidi;
 var writeMidi = require('midi-file').writeMidi;
 
@@ -22,7 +20,13 @@ const args = arg({
 
   // Aliases
   '-o': '--out',
+  '-h': '--help',
 });
+
+if (args['--help']) {
+  console.log(`midicvt [-v] [-s] <input file> <output file>`);
+  process.exit(0);
+}
 
 const midiBuffer = fs.readFileSync(args._[0]);
 

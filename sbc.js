@@ -3,25 +3,27 @@ const fs = require('fs');
 
 const {serializeSBK} = require('./sequencebank');
 
-function writeSBK() {
-  const arg = require('arg');
+const arg = require('arg');
 
-  const args = arg({
-    // Types
-    '--help': Boolean,
-    '--out': String, // --name <string> or --name=<string>
+const args = arg({
+  // Types
+  '--help': Boolean,
+  '--out': String, // --name <string> or --name=<string>
 
-    // Aliases
-    '-o': '--out',
-  });
+  // Aliases
+  '-o': '--out',
+  '-h': '--help',
+});
 
-  const inFiles = args._.map((f) => fs.readFileSync(f));
-
-  const output = serializeSBK(inFiles);
-
-  // console.log(output.length, output);
-
-  fs.writeFileSync(args['--out'] || 'tst.sbk', output);
+if (args['--help']) {
+  console.log(`sbc -o <output file> file0 [file1 file2 file3 ....]`);
+  process.exit(0);
 }
 
-writeSBK();
+const inFiles = args._.map((f) => fs.readFileSync(f));
+
+const output = serializeSBK(inFiles);
+
+// console.log(output.length, output);
+
+fs.writeFileSync(args['--out'] || 'tst.sbk', output);
