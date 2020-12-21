@@ -19,7 +19,7 @@ function writeSBK() {
 
   const output = serializeSBK(inFiles);
 
-  console.log(output.length, output);
+  // console.log(output.length, output);
 
   fs.writeFileSync(args['--out'] || 'tst.sbk', output);
 }

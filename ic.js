@@ -15,17 +15,26 @@ const args = arg({
 
   // Aliases
   '-o': '--out',
+  '-h': '--help',
 });
 
-if (!args._[0]) {
+if (args['--help']) {
+  console.log(`ic -o <output file prefix> <source file>`);
+  process.exit(0);
+}
+
+const sourceFile = args._[0];
+
+if (!sourceFile) {
   throw new Error('no input file specified');
 }
 
-const contents = fs.readFileSync(args._[0], 'utf8');
+const contents = fs.readFileSync(sourceFile, 'utf8');
 
+let parsed;
 try {
-  const parsed = parser.parse(contents);
-  console.log(parsed);
+  parsed = parser.parse(contents);
+  // console.log(parsed);
 } catch (err) {
   const loc = err.location;
   console.error(
@@ -43,4 +52,7 @@ ${err.found}`
   } else {
     console.error(err.message);
   }
+  process.exit(1);
 }
+
+sourceToBank(parsed, sourceFile).writeBankFile(args['--out'] || 'tst');

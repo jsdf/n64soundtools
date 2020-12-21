@@ -15,7 +15,7 @@ MAKEROM = mild
 
 # When you use the former audio micro codes,
 # please comment this out.
-N_AUDIO = yes
+# N_AUDIO = yes
 
 ifdef N_AUDIO
 NUAUDIOLIB = -lnualsgi_n_d -lgn_audio_d
@@ -26,6 +26,9 @@ endif
 LCDEFS =	-DNU_DEBUG -DF3DEX_GBI_2
 ifdef N_AUDIO
 LCDEFS += -DN_AUDIO
+endif
+ifdef REMOTE_MIDI
+LCDEFS += -DREMOTE_MIDI
 endif
 LCINCS =	-I. -I$(NUSYSINCDIR) -I$(ROOT)/usr/include/PR
 LCOPTS =	-G 0

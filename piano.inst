@@ -15,11 +15,11 @@ instrument piano {
 }
 
 sound pianoc2 {
-  use("./sampleC2.aif");
+  use("./sampleC2_01.aif");
   envelope = piano;
-  keyMap = piano;
-  samplePan = 64;
-  sampleVolume = 127;
+  keymap = piano;
+  pan = 64;
+  volume = 127;
 }
 
 keymap piano {

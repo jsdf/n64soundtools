@@ -36,22 +36,26 @@ beginseg
 	name "midibank"
 	flags RAW
 	// include "wave.ctl"
-	include "$(ROOT)/usr/lib/PR/soundbanks/GenMidiBank.ctl"
+	// include "$(ROOT)/usr/lib/PR/soundbanks/GenMidiBank.ctl"
+	// include "$(ROOT)/usr/lib/PR/soundbanks/GenMidiRaw.ctl"
+	include "../../genmidi.ctl"
 endseg
 
 beginseg
 	name "miditable"
 	flags RAW
 	// include "wave.tbl"
-	include "$(ROOT)/usr/lib/PR/soundbanks/GenMidiBank.tbl"
+	// include "$(ROOT)/usr/lib/PR/soundbanks/GenMidiBank.tbl"
+	// include "$(ROOT)/usr/lib/PR/soundbanks/GenMidiRaw.tbl"
+	include "../../genmidi.tbl"
 endseg
 
 beginseg
 	name "seq"
-	flags RAW
-	// include "midi.sbk"  
-	include "tst.sbk"
-	// include "$(ROOT)/usr/lib/PR/sequences/ship.sbk"
+	flags RAW 
+	// include "silence.sbk"
+	// include "tst.sbk"
+	include "$(ROOT)/usr/lib/PR/sequences/ship.sbk"
 
 endseg
 

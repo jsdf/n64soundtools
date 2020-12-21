@@ -84,12 +84,39 @@ void seqPlayerBankSet(u8* bank_addr, u32 bank_size, u8* table_addr)
 {
   ALBank* bank_ptr;
   s32   cnt;
+  int i,j,k;
 
   seqPlayerBankFile = nuAuHeapAlloc(bank_size);
   nuPiReadRom((u32)bank_addr, seqPlayerBankFile, bank_size);
+
+  ed64PrintfSync2("bankCount %d\n", seqPlayerBankFile->bankCount);
+  for (i = 0; i < seqPlayerBankFile->bankCount; ++i)
+  {
+    u32 offset = seqPlayerBankFile->bankArray[i];
+    ed64PrintfSync2("bank %d offset=%d p=%p\n", i, offset, bank_addr + offset);
+  }
   
   alBnkfNew(seqPlayerBankFile, table_addr);
   bank_ptr = seqPlayerBankFile->bankArray[0];
+
+  for (i = 0; i < seqPlayerBankFile->bankCount; ++i) {
+    ALBank * bank = (ALBank *)seqPlayerBankFile->bankArray[i];
+    ed64PrintfSync2("bank %d p=%x sampleRate=%d\n", i, bank, bank->sampleRate);
+    for (j = 0; j < bank->instCount; ++j) {
+      ALInstrument * inst = (ALInstrument *)bank->instArray[j];
+      ed64PrintfSync2("inst %d p=%x\n", j, inst);
+
+      for (k = 0; k < inst->soundCount; ++k) {
+        ALSound * sound = (ALSound *)inst->soundArray[k];
+        ed64PrintfSync2("sound %d p=%x\n", j, sound);
+        ed64PrintfSync2("wavetable type=%u\n",  sound->wavetable->type);
+        break;
+      }
+      break;
+    } 
+    break;
+  }
+  
 
   alSeqpSetBank(seqPlayer, bank_ptr);
 }
@@ -457,8 +484,9 @@ void updateGame00(void)
     chVolumes[i] = alSeqpGetChlVol(seqPlayer, i);
     chPrograms[i] = alSeqpGetChlProgram(seqPlayer, i);
   }
-
+#ifdef REMOTE_MIDI
   ed64SoundtestUsbListener();
+#endif
 }
 
 /* The vertex coordinate */

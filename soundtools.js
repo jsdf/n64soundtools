@@ -1,8 +1,11 @@
-const fs = require('fs').promises;
+const fs = require('fs');
+const path = require('path');
 
 const AIFF = require('./aiff');
 const {BufferStruct, BufferStructUnion} = require('./bufferstruct');
 const InstParserUtils = require('./instparserutils');
+
+const DEBUG = false;
 
 const AL_ADPCM_WAVE = 0;
 const AL_RAW16_WAVE = 1;
@@ -224,25 +227,88 @@ const ALWaveTableStruct = new BufferStruct({
   },
 });
 
-async function bankToSource() {
-  const ctlBuffer = await fs.readFile(
-    '/Users/jfriend/.wine/drive_c/ultra/usr/lib/PR/soundbanks/GenMidiRaw.ctl'
+function instFileTextGen(defs) {
+  return (
+    defs
+      .map((def) => {
+        const members = [];
+        const typeSchema = InstParserUtils.schemas[def.type];
+        if (!typeSchema) {
+          throw new Error(`no schema for type '${def.type}'`);
+        }
+        Object.entries(def.value).forEach(([fieldName, value]) => {
+          const fieldType = typeSchema.members[fieldName];
+          if (!fieldType)
+            throw new Error(`no field ${fieldName} on type ${def.type}`);
+          if (fieldType == 'file') {
+            members.push(`use("${value}");`);
+          } else if (Array.isArray(value)) {
+            if (fieldType === 'symbolMap' || fieldType === 'symbolArray') {
+              value.forEach((ref, i) => {
+                if (!InstParserUtils.getSymbolName(ref))
+                  throw new Error(
+                    `expected symbol, got ${JSON.stringify(
+                      ref
+                    )} in ${fieldName} on type ${def.type} `
+                  );
+                const symbolName = InstParserUtils.getSymbolName(ref);
+                members.push(
+                  fieldType === 'symbolMap'
+                    ? `${fieldName} [${i}] = ${symbolName};`
+                    : `${fieldName} = ${symbolName};`
+                );
+              });
+            } else {
+              throw new Error(
+                `array not valid value for field ${fieldName} on ${def.type}`
+              );
+            }
+          } else if (InstParserUtils.isSymbol(value)) {
+            members.push(
+              `${fieldName} = ${InstParserUtils.getSymbolName(value)};`
+            );
+          } else if (typeof value === 'number') {
+            members.push(`${fieldName} = ${String(value)};`);
+          } else {
+            throw new Error(
+              `unsupported value "${JSON.stringify(
+                value
+              )}" for field ${fieldName} on ${def.type}`
+            );
+          }
+        });
+        return `${def.type} ${def.name} {\n${members
+          .map((v) => '  ' + v)
+          .join('\n')}\n}`;
+      })
+      .join('\n\n') + '\n'
+  );
+}
+
+async function bankToSource(sourceFile, outPath, generalMidi) {
+  const inFilePrefix = sourceFile.replace(/\.\w+$/, '');
+  const outFilePrefix = outPath.replace(/\.inst$/, '');
+  const outSamplesDir = outFilePrefix + '_samples';
+  await fs.promises.mkdir(outSamplesDir, {recursive: true});
+
+  const ctlBuffer = await fs.promises.readFile(
+    inFilePrefix + '.ctl'
     // '/Users/jfriend/.wine/drive_c/ultra/usr/lib/PR/soundbanks/sfx.ctl'
   );
-  const tblBuffer = await fs.readFile(
-    '/Users/jfriend/.wine/drive_c/ultra/usr/lib/PR/soundbanks/GenMidiRaw.tbl'
+  const tblBuffer = await fs.promises.readFile(
+    inFilePrefix + '.tbl'
     // '/Users/jfriend/.wine/drive_c/ultra/usr/lib/PR/soundbanks/sfx.tbl'
   );
 
   const bankFile = ALBankFileStruct.parse(ctlBuffer);
 
-  console.log('bankFile', bankFile);
+  DEBUG && console.log('bankFile', bankFile);
 
   bankFile.banks = {};
   bankFile.bankArray.forEach((offset) => {
     bankFile.banks[offset] = ALBankStruct.parse(ctlBuffer, offset);
   });
-  console.log('bankFile.banks', bankFile.banks);
+  DEBUG && console.log('bankFile.banks', bankFile.banks);
 
   bankFile.instruments = {};
   Object.values(bankFile.banks).forEach((bank) => {
@@ -253,10 +319,11 @@ async function bankToSource() {
       );
     });
   });
-  console.log(
-    'bankFile.instruments',
-    Object.values(bankFile.instruments).slice(0, 4)
-  );
+  DEBUG &&
+    console.log(
+      'bankFile.instruments',
+      Object.values(bankFile.instruments).slice(0, 4)
+    );
 
   bankFile.sounds = {};
   Object.values(bankFile.instruments).forEach((instrument) => {
@@ -264,7 +331,8 @@ async function bankToSource() {
       bankFile.sounds[offset] = ALSoundStruct.parse(ctlBuffer, offset);
     });
   });
-  console.log('bankFile.sounds', Object.values(bankFile.sounds).slice(0, 4));
+  DEBUG &&
+    console.log('bankFile.sounds', Object.values(bankFile.sounds).slice(0, 4));
 
   bankFile.envelopes = {};
   bankFile.keyMaps = {};
@@ -279,15 +347,130 @@ async function bankToSource() {
     bankFile.wavetables[sound.wavetable] =
       bankFile.wavetables[sound.wavetable] ||
       ALWaveTableStruct.parse(ctlBuffer, sound.wavetable);
+
+    if (bankFile.wavetables[sound.wavetable].waveInfo.loop)
+      console.log(
+        'loop:',
+        sound.wavetable,
+        bankFile.wavetables[sound.wavetable]
+      );
   });
-  console.log(
-    'bankFile.envelopes',
-    Object.values(bankFile.envelopes).slice(0, 4)
-  );
-  console.log('bankFile.keyMaps', Object.values(bankFile.keyMaps).slice(0, 4));
-  console.log(
-    'bankFile.wavetables',
-    Object.values(bankFile.wavetables).slice(0, 4)
+  DEBUG &&
+    console.log(
+      'bankFile.envelopes',
+      Object.values(bankFile.envelopes).slice(0, 4)
+    );
+  DEBUG &&
+    console.log(
+      'bankFile.keyMaps',
+      Object.values(bankFile.keyMaps).slice(0, 4)
+    );
+  DEBUG &&
+    console.log(
+      'bankFile.wavetables',
+      Object.values(bankFile.wavetables).slice(0, 4)
+    );
+
+  function formatRef(type, ref) {
+    return `${type}_${ref}`;
+  }
+
+  const refFields = {
+    // map to referenced type
+    bankArray: 'bank',
+    instArray: 'instrument',
+    soundArray: 'sound',
+    percussion: 'instrument',
+    envelope: 'envelope',
+    keyMap: 'keymap',
+  };
+
+  const ignoreFields = new Set([
+    'flags',
+    'pad',
+    'bankCount',
+    'instCount',
+    'soundCount',
+  ]);
+
+  const renamedFields = {
+    // struct field name -> inst file def member name
+    percussion: 'percussionDefault',
+    keyMap: 'keymap',
+    samplePan: 'pan',
+    sampleVolume: 'volume',
+    bankArray: 'bank',
+    instArray: 'instrument',
+    soundArray: 'sound',
+  };
+  // translate objects of offset -> struct into array of objects for text gen
+  function objByOffsetToDefs(obj, type) {
+    return Object.entries(obj).map(([offset, struct]) => {
+      // massage the object format a bit
+      const value = {};
+      Object.keys(struct).forEach((key) => {
+        const outFieldName = renamedFields[key] || key;
+        if (ignoreFields.has(key)) {
+          return;
+        }
+        if (key in refFields) {
+          const referencedType = refFields[key];
+          const fieldValue = struct[key];
+          if (Array.isArray(fieldValue)) {
+            value[outFieldName] = struct[key].map((refArrayItemAsOffset) => ({
+              type: 'symbol',
+              value: formatRef(referencedType, String(refArrayItemAsOffset)),
+            }));
+          } else {
+            value[outFieldName] = {
+              type: 'symbol',
+              value: formatRef(referencedType, String(struct[key])),
+            };
+          }
+
+          return;
+        }
+
+        // otherwise, just copy the value to the output object
+        value[outFieldName] = struct[key];
+      });
+
+      return {
+        type,
+        name: formatRef(type, offset),
+        value,
+      };
+    });
+  }
+
+  function makeWavetableFilePath(offset) {
+    return path.join(outSamplesDir, offset + '.aifc');
+  }
+
+  await fs.promises.writeFile(
+    outFilePrefix + '.inst',
+    instFileTextGen(
+      [].concat(
+        objByOffsetToDefs(bankFile.banks, 'bank'),
+        objByOffsetToDefs(bankFile.instruments, 'instrument'),
+        objByOffsetToDefs(bankFile.sounds, 'sound').map((soundDef) => {
+          const {wavetable, ...fields} = soundDef.value;
+          // replace offset with path to actual file
+          const aSampleTable = bankFile.wavetables[wavetable];
+          if (!aSampleTable)
+            throw new Error(
+              `couldn't find wavetable ${wavetable} from ${soundDef.name}`
+            );
+          const value = {
+            ...fields,
+            use: makeWavetableFilePath(aSampleTable.base),
+          };
+          return {...soundDef, value};
+        }),
+        objByOffsetToDefs(bankFile.keyMaps, 'keymap'),
+        objByOffsetToDefs(bankFile.envelopes, 'envelope')
+      )
+    )
   );
   await Promise.all(
     Object.keys(bankFile.wavetables).map((offset) => {
@@ -303,7 +486,10 @@ async function bankToSource() {
         sampleSize: 16,
         sampleRate: 44100,
       });
-      return fs.writeFile('testwav/' + offset + '.aifc', aiffFileContents);
+      return fs.promises.writeFile(
+        makeWavetableFilePath(aSampleTable.base),
+        aiffFileContents
+      );
     })
   );
 }
@@ -336,15 +522,26 @@ function getSymbolField(obj, fieldName) {
   return InstParserUtils.getSymbolName(obj.value[fieldName]);
 }
 
+function getAlignedSize(size, alignment) {
+  return Math.ceil(size / alignment) * alignment;
+}
+
 class FileTable {
+  chunks = new Map();
+  size = 0;
+  constructor(alignment = null) {
+    this.alignment = alignment;
+  }
   insertBuffer(buffer) {
+    if (this.alignment != null) {
+      // advance position of next insertion to be aligned as required
+      this.size = getAlignedSize(this.size, this.alignment);
+    }
     const location = this.size;
     this.chunks.set(location, buffer);
     this.size += buffer.length;
     return location;
   }
-  chunks = new Map();
-  size = 0;
 
   replaceBuffer(offset, buffer) {
     if (!this.chunks.has(offset)) {
@@ -358,54 +555,95 @@ class FileTable {
         `replacing buffer of length ${expectedLength} with incorrect buffer of length ${buffer.length} at ${offset}`
       );
     }
+    this.chunks.set(offset, buffer);
   }
 
   build() {
-    return Buffer.concat(this.chunks);
+    return Buffer.concat(
+      Array.from(this.chunks.entries()).map(([offset, chunk]) => {
+        if (this.alignment == null) return chunk;
+        // pad any chunks to match alignment
+        // assumes we also aligned their start pos correctly when inserting them
+        const alignedSize = getAlignedSize(chunk.length, this.alignment);
+        if (alignedSize == chunk.length) {
+          return chunk;
+        } else {
+          const padded = Buffer.alloc(alignedSize);
+          chunk.copy(padded);
+          return padded;
+        }
+      })
+    );
   }
 }
 
 class ALBankFileWriter {
   objects = new Map(
-    Object.keys(InstParserUtils.schemas).map((key) => [key, new Map()])
+    [
+      'bank',
+      'instrument',
+      'sound',
+      'keymap',
+      'envelope',
+      'wavetable',
+    ].map((key) => [key, new Map()])
   );
 
-  ctl = new FileTable();
-  tbl = new FileTable();
+  ctl = new FileTable(/* 8-byte alignment */ 8);
+  tbl = new FileTable(/* 16-byte alignment */ 8);
 
-  constructor(defs) {
+  constructor(defs, sourceFileLocation) {
+    this.sourceFileLocation = sourceFileLocation;
     defs.forEach((obj) => {
       this.insertObject(obj);
       if (obj.type === 'sound') {
-        // .inst files reference wave files with use() statement rather than a
-        // def block of their own, so we create an object to represent them
-        this.insertObject({
-          type: 'wavetable',
-          name: obj.value.file,
-          value: {file: obj.value.file},
-        });
+        if (!obj.value.file)
+          throw new Error(`sound with no file defined: ${JSON.stringify(obj)}`);
+
+        if (!this.hasObject('wavetable', obj.value.file)) {
+          // .inst files reference audio files with use() statement rather than a
+          // def block of their own, so we create an object to represent the
+          // actual audio file contents
+          this.insertObject({
+            type: 'wavetable',
+            name: obj.value.file,
+            value: {file: obj.value.file},
+          });
+        }
       }
     });
   }
 
+  getObjectsOfType(type) {
+    const objectsForType = this.objects.get(type);
+    if (!objectsForType) {
+      throw new Error(`unsupported object type '${obj.type}'`);
+    }
+    return objectsForType;
+  }
+
+  hasObject(type, name) {
+    return this.objects.get(type) && this.objects.get(type).has(name);
+  }
+
   insertObject(obj) {
-    const objectsForType = this.objects.get(obj.type);
+    const objectsForType = this.getObjectsOfType(obj.type);
     if (objectsForType.has(obj.name)) {
       throw new Error(`${obj.type} ${obj.name} inserted twice`);
     }
 
-    objectsForType.set(obj.name, obj);
+    objectsForType.set(obj.name, {obj, offset: null});
   }
 
   dependOnFieldReferencedObject({type, field, source}) {
-    const referencedSymbolName = getSymbolField(obj, field);
-    if (!this.objects.get(type).has(referencedSymbolName)) {
+    const referencedSymbolName = getSymbolField(source, field);
+    if (!this.hasObject(type, referencedSymbolName)) {
       throw new Error(
         `${type} '${referencedSymbolName}' referenced from ${source.type} '${source.name}' but no ${type} exists with that name`
       );
     }
 
-    this.dependOnObject({type, name: referencedSymbolName});
+    return this.dependOnObject({type, name: referencedSymbolName});
   }
 
   dependOnReferencedObject({type, field, reference, source}) {
@@ -418,45 +656,69 @@ class ALBankFileWriter {
     }
 
     const name = InstParserUtils.getSymbolName(reference);
-    if (!this.objects.get(type).has(name)) {
+    if (!this.hasObject(type, name)) {
       throw new Error(
         `${type} '${name}' referenced from ${source.type} '${source.name}' but no ${type} exists with that name`
       );
     }
 
-    this.dependOnObject({type, name});
+    return this.dependOnObject({type, name});
   }
 
   dependOnObject({type, name}) {
-    if (!this.objects.get(type).has(name)) {
+    const objMetadata = this.getObjectsOfType(type).get(name);
+    if (!objMetadata) {
       throw new Error(
         `${type} '${name}' required but no ${type} exists with that name`
       );
     }
 
-    return this.ctl.insertBuffer(
-      this.addObjectToOutputFiles(this.objects.get(type).get(name))
-    );
+    const existingOffset = objMetadata.offset;
+
+    if (existingOffset != null) {
+      return existingOffset;
+    } else {
+      const offset = this.ctl.insertBuffer(
+        this.addObjectToOutputFiles(objMetadata.obj)
+      );
+      objMetadata.offset = offset;
+      return offset;
+    }
   }
 
   addObjectToOutputFiles(obj) {
     switch (obj.type) {
-      case 'bank':
-        return ALBankStruct.serialize({
+      case 'bank': {
+        const data = {
           ...obj.value,
+          pad: 0, // required padding field
+          percussion: obj.value.percussionDefault,
           flags: FLAGS_REF_AS_OFFSET,
-          soundCount: obj.value.instruments.length,
-          instArray: obj.value.instruments.map((instrumentRef) =>
-            this.dependOnReferencedObject({
-              reference: instrumentRef,
-              type: 'instrument',
-              field: 'instruments',
-              source: obj,
-            })
-          ),
-        });
-      case 'instrument':
-        return ALInstrumentStruct.serialize({
+          instCount: Array.from(obj.value.instruments).length,
+          instArray: Array.from(obj.value.instruments.entries())
+            .sort((a, b) => a[0] - b[0])
+            .map(([instNumber, instrumentRef], index) => {
+              if (index !== instNumber) {
+                throw new Error(`missing instrument number ${index}`);
+              }
+              if (index < 0 || index > 127) {
+                throw new Error(
+                  `invalid instrument number ${index} outside range 0-127`
+                );
+              }
+
+              return this.dependOnReferencedObject({
+                reference: instrumentRef,
+                type: 'instrument',
+                field: 'instruments',
+                source: obj,
+              });
+            }),
+        };
+        return ALBankStruct.serialize(data);
+      }
+      case 'instrument': {
+        const data = {
           ...obj.value,
           flags: FLAGS_REF_AS_OFFSET,
           soundCount: obj.value.sounds.length,
@@ -468,16 +730,23 @@ class ALBankFileWriter {
               source: obj,
             })
           ),
-        });
-      case 'keymap':
+        };
+        return ALInstrumentStruct.serialize(data);
+      }
+      case 'keymap': {
         return ALKeyMapStruct.serialize(obj.value);
-      case 'envelope':
+      }
+      case 'envelope': {
         return ALEnvelopeStruct.serialize(obj.value);
-      case 'wavetable':
-        const waveData = loadAIFFWaveData(obj.value.file);
+      }
+      case 'wavetable': {
+        const resolvedLocation = path.resolve(
+          path.dirname(this.sourceFileLocation),
+          obj.value.file
+        );
+        const waveData = loadAIFFWaveData(resolvedLocation);
         const waveTblOffset = this.tbl.insertBuffer(waveData);
-
-        return ALWaveTableStruct.serialize({
+        const data = {
           base: waveTblOffset,
           len: waveData.length,
           type: AL_RAW16_WAVE, // TODO: support AL_ADPCM_WAVE
@@ -486,9 +755,12 @@ class ALBankFileWriter {
             loop: 0,
             // book: AL_ADPCM_WAVE only
           },
-        });
-      case 'sound':
-        return ALSoundStruct.serialize({
+        };
+
+        return ALWaveTableStruct.serialize(data);
+      }
+      case 'sound': {
+        const data = {
           envelope: this.dependOnFieldReferencedObject({
             type: 'envelope',
             source: obj,
@@ -506,7 +778,9 @@ class ALBankFileWriter {
           samplePan: obj.value.pan,
           sampleVolume: obj.value.volume,
           flags: FLAGS_REF_AS_OFFSET,
-        });
+        };
+        return ALSoundStruct.serialize(data);
+      }
       default:
         throw new Error(`unknown object type: ${obj.type}`);
         break;
@@ -530,9 +804,12 @@ class ALBankFileWriter {
     let bankFileHeader = makeHeader(banks.map((_) => 0));
     this.ctl.insertBuffer(bankFileHeader);
     // insert all the referenced file parts
-    const banksOffsets = banks.map((bank) => this.dependOnObject(bank));
+    const banksOffsets = banks.map((bank) => this.dependOnObject(bank.obj));
     // replace header with corrected offsets
     bankFileHeader = makeHeader(banksOffsets);
+    console.log('bankFileHeader', bankFileHeader, {
+      banksOffsets: banksOffsets.map((v) => v.toString(16)),
+    });
     this.ctl.replaceBuffer(0, bankFileHeader);
 
     fs.writeFileSync(filePrefix + '.ctl', this.ctl.build());
@@ -540,8 +817,8 @@ class ALBankFileWriter {
   }
 }
 
-async function sourceToBank(defs) {
-  const fileWriter = new ALBankFileWriter(defs);
+function sourceToBank(defs, sourceFileLocation) {
+  const fileWriter = new ALBankFileWriter(defs, sourceFileLocation);
   return fileWriter;
 }
 

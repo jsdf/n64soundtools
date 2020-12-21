@@ -1,3 +1,5 @@
+const DEBUG = false;
+
 function nullthrows(value, message) {
   if (value == null) {
     throw new Error('unexpected null' + (message ? ': ' + message : ''));
@@ -63,6 +65,13 @@ class BufferStruct {
                 `can't parse field of type 'bytes' without predetermined size`
               );
             }
+            if (buffer.length < startOffset + size) {
+              throw new Error(
+                `tried to read ${size} bytes but only ${
+                  buffer.length - startOffset
+                } remaining for field ${fieldName} on ${this.getName()}`
+              );
+            }
             const valueAsBuffer = buffer.slice(startOffset, startOffset + size);
             let value = valueAsBuffer;
             if (type === 'utf8') {
@@ -72,12 +81,12 @@ class BufferStruct {
           }
         : type instanceof BufferStruct
         ? (buffer, startOffset) => {
-            console.log('parsing', type.getName(), 'at', startOffset);
+            // console.log('parsing', type.getName(), 'at', startOffset);
             const value = type.parse(buffer, startOffset, contextData);
             // use static size where determined (eg. in case of union)
             const parsedSize =
               size != null ? size : type.lastOffset - startOffset; // change in offset after parsing
-            console.log({value, parsedSize});
+            // console.log({value, parsedSize});
 
             return {value, parsedSize};
           }
@@ -118,10 +127,14 @@ class BufferStruct {
           size != null ? size : parsedSize
         );
 
-        if (size != null && parsedSizeWithAlignment > size) {
-          throw new Error(
-            `aligned parsed size ${parsedSize} larger than predetermined size ${size} for field ${fieldName} on ${this.getName()}`
-          );
+        if (size != null) {
+          const alignedExpectedSize = getAlignedSizeForField(field, size);
+
+          if (parsedSizeWithAlignment > alignedExpectedSize) {
+            throw new Error(
+              `aligned parsed size ${parsedSizeWithAlignment} larger than aligned predetermined size ${alignedExpectedSize} for field ${fieldName} on ${this.getName()}`
+            );
+          }
         }
 
         return {value, consumedSize: nanthrows(parsedSizeWithAlignment)};
@@ -137,7 +150,7 @@ class BufferStruct {
         const array = new Array(count);
 
         for (var i = 0; i < count; ++i) {
-          console.log('getting array el', i, 'of', count, 'at', offset);
+          // console.log('getting array el', i, 'of', count, 'at', offset);
           const {value, consumedSize} = parseWithAlignment(buffer, offset);
 
           offset += nanthrows(consumedSize);
@@ -214,6 +227,11 @@ class BufferStruct {
   }
 
   serialize(data, contextData = null) {
+    if (!data) {
+      throw new Error(
+        `missing argument 'data' when serializing ${this.getName()}`
+      );
+    }
     const parts = [];
     Object.keys(this.schema.fields).forEach((fieldName) => {
       const {field, endian, size, type} = this._getFieldConfig(
@@ -271,7 +289,7 @@ class BufferStruct {
         const serializedSize = partBuffer.length;
         if (size != null && serializedSize > size) {
           throw new Error(
-            `serialized size ${parsedSize} larger than predetermined size ${size} for field ${fieldName} on ${this.getName()}`
+            `serialized size ${serializedSize} larger than predetermined size ${size} for field ${fieldName} on ${this.getName()}`
           );
         }
 
@@ -297,19 +315,22 @@ class BufferStruct {
         return maybeAlignedPartBuffer;
       };
 
-      try {
-        if (field.arrayElements) {
-          for (var i = 0; i < value.length; ++i) {
-            const part = serializeWithAlignment(value[i]);
-            parts.push(part);
-          }
-        } else {
-          const part = serializeWithAlignment(value);
+      // try {
+      if (field.arrayElements) {
+        for (var i = 0; i < value.length; ++i) {
+          const part = serializeWithAlignment(value[i]);
           parts.push(part);
         }
-      } catch (error) {
-        throw new Error(`failed serializing field ${fieldName}: ${error}`);
+      } else {
+        const part = serializeWithAlignment(value);
+        parts.push(part);
       }
+      // } catch (error) {
+      //   const extra = DEBUG ? `${error.stack} \nrethrown stack:` : '';
+      //   throw new Error(
+      //     `failed serializing field ${fieldName}: ${error} ${extra}`
+      //   );
+      // }
     });
 
     return Buffer.concat(parts);
@@ -320,9 +341,9 @@ class BufferStruct {
     for (const field of Object.values(this.schema.fields)) {
       if (typeof field.size != 'number') {
         throw new Error('cannot get static size of struct: ' + this.getName());
-        const alignedFieldSize = getAlignedSizeForField(field, field.size);
-        size += alignedFieldSize;
       }
+      const alignedFieldSize = getAlignedSizeForField(field, field.size);
+      size += alignedFieldSize;
     }
     return size;
   }

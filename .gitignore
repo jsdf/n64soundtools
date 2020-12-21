@@ -28,3 +28,10 @@ laststate.json
 *.aif
 *.aifc
 *.aiff
+
+*.tbl
+*.ctl
+genmidi.inst
+genmidi2.inst
+tst.seq
+tst.sbk

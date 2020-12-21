@@ -38,16 +38,5 @@ sleep 1;
 retry loader64 -v --pifboot
 
 # tail the logger
-# if [ -z "${PROFILE-}" ]; then
-#   echo "press ctrl+C to exit"
-#   ed64log
-# else
-#   echo "press ctrl+C to end capture and show trace"
-#   ed64log > trace.log
-#   echo ""
-#   echo "unpacking trace"
-#   python3 process_trace.py trace.log trace.json
-#   echo "converting trace to html"
-#   $CATAPULT/tracing/bin/trace2html trace.json --output=trace.html
-#   open trace.html
-# fi
+echo "press ctrl+C to exit"
+ed64log

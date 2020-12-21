@@ -29,11 +29,11 @@ function validateAndAssignMember(
         .join(', ')}`,
       member.location
     );
+  // hack to make plural fields like instrument -> instruments
   const resultFieldName =
     schemaFieldType == 'symbolMap' || schemaFieldType == 'symbolArray'
       ? `${member.name}s`
       : member.name;
-  // hack to make plural fields like instrument -> instruments
   switch (schemaFieldType) {
     case 'use':
       // for 'use' type mapping is backwards
@@ -116,8 +116,6 @@ const schemas = {
       pan: 'number',
       volume: 'number',
       sound: 'symbolArray',
-      volume: 'number',
-      pan: 'number',
       priority: 'number',
       tremType: 'number',
       tremRate: 'number',
@@ -134,7 +132,7 @@ const schemas = {
         volume: 127,
         pan: 64,
         sounds: [],
-        priority: 5,
+        priority: 0,
         tremType: 0,
         tremRate: 0,
         tremDepth: 0,
@@ -176,11 +174,11 @@ const schemas = {
     },
     defaults() {
       return {
-        velocityMin: 0,
+        velocityMin: 1,
         velocityMax: 127,
-        keyMin: 60,
-        keyMax: 60,
-        keyBase: 76,
+        keyMin: 0,
+        keyMax: 127,
+        keyBase: 60,
         detune: 0,
       };
     },
@@ -197,9 +195,9 @@ const schemas = {
       return {
         attackTime: 0,
         attackVolume: 127,
-        decayTime: 500000,
-        decayVolume: 100,
-        releaseTime: 200000,
+        decayTime: 0,
+        decayVolume: 127,
+        releaseTime: 0,
       };
     },
   },
