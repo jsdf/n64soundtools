@@ -1,4 +1,4 @@
-const renderMIDIStream = require('./renderMIDIStream');
+const renderMidiStream = require('./renderMidiStream');
 
 class Player {
   playing = false;
@@ -7,7 +7,7 @@ class Player {
   _nextEvent = 0;
 
   constructor(midi, channelFilter, generalMIDI) {
-    this.events = renderMIDIStream(midi, channelFilter, generalMIDI);
+    this.events = renderMidiStream(midi, channelFilter, generalMIDI);
   }
 
   getPendingEvents(timeWindow) {

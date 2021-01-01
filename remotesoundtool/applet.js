@@ -1,12 +1,9 @@
-const express = require('express');
 const socketio = require('socket.io');
 const fs = require('fs');
 
 const DEV = process.env.NODE_ENV === 'development';
 
-const DebuggerInterface = DEV
-  ? require('../../ed64log/ed64logjs/dbgif')
-  : require('ed64logjs/dbgif');
+const EVERDRIVE = false;
 
 class Applet {
   dbgif = null;
@@ -40,20 +37,36 @@ class Applet {
     });
   }
 
-  handleCommand(cmd, data) {
+  handleParentCommand(cmd, data) {
     switch (cmd) {
-      case 'b':
-        break;
-      case 'p':
-        break;
-      case 's':
-      case 'r':
-        this.setState({
-          atBreakpoint: null,
-        });
+      case 'fileSelected':
         break;
     }
-    this.dbgif.sendCommand(cmd, data);
+  }
+
+  handleClientCommand(cmd, data) {
+    switch (cmd) {
+      case 'b':
+      case 'p':
+      case 's':
+      case 'r':
+        // if (EVERDRIVE) {
+        //   this.dbgif.sendCommand(cmd, data);
+        // }
+        break;
+      case 'selectFile':
+        process.send({cmd: 'selectFile', id: String(Math.random())});
+        break;
+    }
+  }
+
+  attachParentHandlers() {
+    process.on('message', (msg) => {
+      console.log('message from parent', msg);
+      if (msg.cmd) {
+        this.handleParentCommand(msg.cmd, msg.data);
+      }
+    });
   }
 
   attachClientHandlers(socket) {
@@ -62,19 +75,27 @@ class Applet {
 
     // subscribe to handle commands send from client
     socket.on('cmd', ({cmd, data}) => {
-      this.handleCommand(cmd, data);
+      this.handleClientCommand(cmd, data);
     });
   }
 
   async attachToApp(app, server) {
-    const dbgif = new DebuggerInterface();
-    this.dbgif = dbgif;
+    if (EVERDRIVE) {
+      const DebuggerInterface = DEV
+        ? require('../../ed64log/ed64logjs/dbgif')
+        : require('ed64logjs/dbgif');
+
+      const dbgif = new DebuggerInterface();
+      this.dbgif = dbgif;
+    }
 
     this.io = socketio(server);
 
     try {
-      await dbgif.start();
-      this.attachDebuggerInferfaceHandlers(dbgif);
+      if (EVERDRIVE) {
+        await dbgif.start();
+        this.attachDebuggerInferfaceHandlers(dbgif);
+      }
     } catch (err) {
       console.error(err);
       if (DEV) {
