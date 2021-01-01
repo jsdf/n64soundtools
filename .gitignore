@@ -32,7 +32,4 @@ laststate.json
 
 *.tbl
 *.ctl
-genmidi.inst
-genmidi2.inst
-tst.seq
-tst.sbk
+test/

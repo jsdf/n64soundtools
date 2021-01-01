@@ -19,4 +19,4 @@ see http://n64devkit.square7.ch/pro-man/pro18/18-01.htm
 
 ## bankdec.js
 
-decompiles .ctl and .tbl to .inst
+decompiles .ctl and .tbl to .inst and .aiff/.aifc

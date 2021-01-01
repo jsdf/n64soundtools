@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 
 // test with:
-// node_modules/.bin/pegjs instparser.pegjs && node instparser.js ./test.inst
+// node_modules/.bin/pegjs instparser.pegjs && node instparser.js ./test/test.inst
 
 const fs = require('fs');
 const arg = require('arg');

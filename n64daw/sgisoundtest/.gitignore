@@ -101,3 +101,7 @@ disassembly.txt
 # makefile variable overrides
 localdefs.makefile
 *.dasm
+
+
+tst.seq
+tst.sbk

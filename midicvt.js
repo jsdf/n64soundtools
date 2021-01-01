@@ -2,6 +2,7 @@
 
 // midicvt takes an input midi file and filters out a bunch of unneeded event types,
 // saving the output as a (Type 0 MIDI) .seq file
+// TODO: finish implementing deltaTime calculation for track
 
 var parseMidi = require('midi-file').parseMidi;
 var writeMidi = require('midi-file').writeMidi;
@@ -97,7 +98,11 @@ if (args['--blank']) {
 } else {
   const events = [];
   midi.tracks.map((track) => {
+    let lastEventAbsTime = 0;
     track.forEach((ev) => {
+      const absoluteTime = ev.deltaTime + lastEventAbsTime;
+      ev.absoluteTime = absoluteTime;
+      lastEventAbsTime += absoluteTime;
       if (!acceptableEvents.has(ev.type)) {
         return;
       }
@@ -121,6 +126,16 @@ if (args['--blank']) {
       events.push(ev);
     });
   });
+
+  // fix delta times based on track-merged events absolute times
+  events.sort((a, b) => a.absoluteTime - b.absoluteTime);
+  let lastEventTime = 0;
+  events.forEach((ev) => {
+    const deltaTime = ev.absoluteTime - lastEventTime;
+    lastEventTime = ev.absoluteTime;
+    ev.deltaTime = deltaTime;
+  });
+
   events.push({deltaTime: 0, meta: true, type: 'endOfTrack'});
   midi.tracks = [events];
 }

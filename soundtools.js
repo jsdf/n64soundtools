@@ -9,6 +9,9 @@ const DEBUG = false;
 
 const AL_ADPCM_WAVE = 0;
 const AL_RAW16_WAVE = 1;
+const ADPCMVSIZE = 8; // size of one value in book
+const ADPCMFSIZE = 16; // used in ADPCM_STATE type
+const SIZEOF_SHORT = 2;
 
 // flags fields determine whether to interpret references as offsets or pointers
 const FLAGS_REF_AS_OFFSET = 0;
@@ -166,6 +169,64 @@ const ALKeyMapStruct = new BufferStruct({
   },
 });
 
+// typedef struct {
+//     s32 order;
+//     s32 npredictors;
+//     s16 book[1];        /* Actually variable size. Must be 8-byte aligned */
+// } ALADPCMBook;
+
+const ALADPCMBookStruct = new BufferStruct({
+  name: 'ALADPCMBook',
+  endian: 'big',
+  fields: {
+    order: {type: 'uint', size: 4},
+    npredictors: {type: 'uint', size: 4},
+    book: {
+      type: 'bytes',
+      size: (fields) => {
+        const bookSize = fields.npredictors * fields.order * ADPCMVSIZE;
+        const bookBytes = bookSize * SIZEOF_SHORT;
+        return bookBytes;
+      },
+    },
+  },
+});
+
+// typedef short ADPCM_STATE[ADPCMFSIZE];
+// typedef struct {
+//     u32         start;
+//     u32         end;
+//     u32         count;
+//     ADPCM_STATE state;
+// } ALADPCMloop;
+
+const ALADPCMloopStruct = new BufferStruct({
+  name: 'ALADPCMloop',
+  endian: 'big',
+  fields: {
+    start: {type: 'uint', size: 4},
+    end: {type: 'uint', size: 4},
+    count: {type: 'uint', size: 4},
+    state: {type: 'bytes', size: SIZEOF_SHORT * ADPCMFSIZE},
+  },
+});
+
+// typedef struct {
+//     u32         start;
+//     u32         end;
+//     u32         count;
+// } ALRawLoop;
+
+const ALRawLoopStruct = new BufferStruct({
+  name: 'ALRawLoop',
+  endian: 'big',
+  fields: {
+    start: {type: 'uint', size: 4},
+    end: {type: 'uint', size: 4},
+    count: {type: 'uint', size: 4},
+  },
+});
+
 // typedef struct{
 //         ALADPCMloop     *loop;
 //         ALADPCMBook     *book;
@@ -211,6 +272,7 @@ const ALWaveTableStruct = new BufferStruct({
     len: {type: 'int', size: 4},
     type: {type: 'uint', size: 1},
     flags: {type: 'uint', size: 1},
+    pad: {type: 'uint', size: 2}, // simulate c struct member alignment behavior
     waveInfo: {
       type: new BufferStructUnion({
         members: [ALADPCMWaveInfoStruct, ALRAWWaveInfoStruct],
@@ -223,6 +285,71 @@ const ALWaveTableStruct = new BufferStruct({
           }
         },
       }),
+    },
+  },
+});
+
+const VADPCM_CODE_NAME = 'VADPCMCODES';
+const VADPCM_LOOP_NAME = 'VADPCMLOOPS';
+const VADPCM_VERSION = 1;
+
+// short version;
+// short order;
+// short npredictors;
+// short book[]
+const VADPCMBookChunkStruct = new BufferStruct({
+  name: 'VADPCMBookChunk',
+  endian: 'big',
+  fields: {
+    version: {type: 'int', size: 2},
+    order: {type: 'int', size: 2},
+    npredictors: {type: 'int', size: 2},
+    book: {
+      type: 'bytes',
+      size: (fields) => {
+        const bookSize = fields.npredictors * fields.order * ADPCMVSIZE;
+        const bookBytes = bookSize * SIZEOF_SHORT;
+        return bookBytes;
+      },
+    },
+  },
+});
+
+// short version;
+// short nloops;
+// ALADPCMloop aloops[]
+const VADPCMLoopChunkStruct = new BufferStruct({
+  name: 'VADPCMLoopChunk',
+  endian: 'big',
+  fields: {
+    version: {type: 'int', size: 2},
+    nloops: {type: 'int', size: 2},
+    aloops: {
+      type: ALADPCMloopStruct,
+      arrayElements: (fields) => fields.nloops,
+    },
+  },
+});
+
+const VADPCMApplChunkStruct = new BufferStruct({
+  name: 'VADPCMApplChunk',
+  endian: 'big',
+  fields: {
+    chunkName: {type: AIFF.PString},
+    data: {
+      type: 'bytes',
+      size: (fields, dataSize) => dataSize - (fields.chunkName.length + 1),
+      // type: new BufferStructUnion({
+      //   members: [VADPCMBookChunkStruct, VADPCMLoopChunkStruct],
+      //   selectMember: (fields) => {
+      //     switch (fields.chunkName) {
+      //       case VADPCM_CODE_NAME:
+      //         return VADPCMBookChunkStruct;
+      //       case VADPCM_LOOP_NAME:
+      //         return VADPCMLoopChunkStruct;
+      //     }
+      //   },
+      // }),
     },
   },
 });
@@ -285,38 +412,37 @@ function instFileTextGen(defs) {
   );
 }
 
-async function bankToSource(sourceFile, outPath, generalMidi) {
-  const inFilePrefix = sourceFile.replace(/\.\w+$/, '');
-  const outFilePrefix = outPath.replace(/\.inst$/, '');
-  const outSamplesDir = outFilePrefix + '_samples';
-  await fs.promises.mkdir(outSamplesDir, {recursive: true});
+function parseCtl(ctlBuffer, startOffset) {
+  let lastOffset = startOffset;
+  function updateLastOffset(structParser) {
+    lastOffset = Math.max(lastOffset, structParser.lastOffset);
+  }
 
-  const ctlBuffer = await fs.promises.readFile(
-    inFilePrefix + '.ctl'
-    // '/Users/jfriend/.wine/drive_c/ultra/usr/lib/PR/soundbanks/sfx.ctl'
-  );
-  const tblBuffer = await fs.promises.readFile(
-    inFilePrefix + '.tbl'
-    // '/Users/jfriend/.wine/drive_c/ultra/usr/lib/PR/soundbanks/sfx.tbl'
-  );
+  const bankFile = ALBankFileStruct.parse(ctlBuffer, startOffset);
+  updateLastOffset(ALBankFileStruct);
 
-  const bankFile = ALBankFileStruct.parse(ctlBuffer);
-
-  DEBUG && console.log('bankFile', bankFile);
+  // DEBUG && console.log('bankFile', bankFile);
 
   bankFile.banks = {};
   bankFile.bankArray.forEach((offset) => {
-    bankFile.banks[offset] = ALBankStruct.parse(ctlBuffer, offset);
+    bankFile.banks[offset] = ALBankStruct.parse(
+      ctlBuffer,
+      startOffset + offset
+    );
+    updateLastOffset(ALBankStruct);
   });
   DEBUG && console.log('bankFile.banks', bankFile.banks);
 
   bankFile.instruments = {};
   Object.values(bankFile.banks).forEach((bank) => {
     bank.instArray.forEach((offset) => {
-      bankFile.instruments[offset] = ALInstrumentStruct.parse(
-        ctlBuffer,
-        offset
-      );
+      if (!bankFile.instruments[offset]) {
+        bankFile.instruments[offset] = ALInstrumentStruct.parse(
+          ctlBuffer,
+          startOffset + offset
+        );
+        updateLastOffset(ALInstrumentStruct);
+      }
     });
   });
   DEBUG &&
@@ -328,7 +454,13 @@ async function bankToSource(sourceFile, outPath, generalMidi) {
   bankFile.sounds = {};
   Object.values(bankFile.instruments).forEach((instrument) => {
     instrument.soundArray.forEach((offset) => {
-      bankFile.sounds[offset] = ALSoundStruct.parse(ctlBuffer, offset);
+      if (!bankFile.sounds[offset]) {
+        bankFile.sounds[offset] = ALSoundStruct.parse(
+          ctlBuffer,
+          startOffset + offset
+        );
+        updateLastOffset(ALSoundStruct);
+      }
     });
   });
   DEBUG &&
@@ -337,23 +469,56 @@ async function bankToSource(sourceFile, outPath, generalMidi) {
   bankFile.envelopes = {};
   bankFile.keyMaps = {};
   bankFile.wavetables = {};
+  bankFile.books = {};
+  bankFile.loops = {};
   Object.values(bankFile.sounds).forEach((sound) => {
-    bankFile.envelopes[sound.envelope] =
-      bankFile.envelopes[sound.envelope] ||
-      ALEnvelopeStruct.parse(ctlBuffer, sound.envelope);
-    bankFile.keyMaps[sound.keyMap] =
-      bankFile.keyMaps[sound.keyMap] ||
-      ALKeyMapStruct.parse(ctlBuffer, sound.keyMap);
-    bankFile.wavetables[sound.wavetable] =
-      bankFile.wavetables[sound.wavetable] ||
-      ALWaveTableStruct.parse(ctlBuffer, sound.wavetable);
-
-    if (bankFile.wavetables[sound.wavetable].waveInfo.loop)
-      console.log(
-        'loop:',
-        sound.wavetable,
-        bankFile.wavetables[sound.wavetable]
+    if (!bankFile.envelopes[sound.envelope]) {
+      bankFile.envelopes[sound.envelope] = ALEnvelopeStruct.parse(
+        ctlBuffer,
+        startOffset + sound.envelope
       );
+      updateLastOffset(ALEnvelopeStruct);
+    }
+
+    if (!bankFile.keyMaps[sound.keyMap]) {
+      bankFile.keyMaps[sound.keyMap] = ALKeyMapStruct.parse(
+        ctlBuffer,
+        startOffset + sound.keyMap
+      );
+      updateLastOffset(ALKeyMapStruct);
+    }
+    if (!bankFile.wavetables[sound.wavetable]) {
+      bankFile.wavetables[sound.wavetable] = ALWaveTableStruct.parse(
+        ctlBuffer,
+        startOffset + sound.wavetable
+      );
+      updateLastOffset(ALWaveTableStruct);
+    }
+
+    const wavetable = bankFile.wavetables[sound.wavetable];
+
+    if (wavetable.waveInfo.loop) {
+      const loopOffset = wavetable.waveInfo.loop;
+
+      if (!bankFile.loops[loopOffset]) {
+        bankFile.loops[loopOffset] = ALADPCMloopStruct.parse(
+          ctlBuffer,
+          startOffset + loopOffset
+        );
+        updateLastOffset(ALADPCMloopStruct);
+      }
+    }
+
+    if (wavetable.type == AL_ADPCM_WAVE && wavetable.waveInfo.book) {
+      const bookOffset = wavetable.waveInfo.book;
+      if (!bankFile.books[bookOffset]) {
+        bankFile.books[bookOffset] = ALADPCMBookStruct.parse(
+          ctlBuffer,
+          startOffset + bookOffset
+        );
+        updateLastOffset(ALADPCMBookStruct);
+      }
+    }
   });
   DEBUG &&
     console.log(
@@ -370,6 +535,27 @@ async function bankToSource(sourceFile, outPath, generalMidi) {
       'bankFile.wavetables',
       Object.values(bankFile.wavetables).slice(0, 4)
     );
+  DEBUG &&
+    console.log('bankFile.books', Object.values(bankFile.books).slice(0, 4));
+
+  bankFile.lastOffset = lastOffset;
+
+  return bankFile;
+}
+
+async function bankToSource(
+  ctlBuffer,
+  ctlStartOffset,
+  tblBuffer,
+  tblStartOffset,
+  outPath,
+  generalMidi
+) {
+  const outFilePrefix = outPath.replace(/\.inst$/, '');
+  const outSamplesDir = outFilePrefix + '_samples';
+  await fs.promises.mkdir(outSamplesDir, {recursive: true});
+
+  const bankFile = parseCtl(ctlBuffer, ctlStartOffset);
 
   function formatRef(type, ref) {
     return `${type}_${ref}`;
@@ -443,8 +629,11 @@ async function bankToSource(sourceFile, outPath, generalMidi) {
     });
   }
 
-  function makeWavetableFilePath(offset) {
-    return path.join(outSamplesDir, offset + '.aifc');
+  function makeWavetableFilePath(wavetable) {
+    return path.join(
+      outSamplesDir,
+      wavetable.base + (wavetable.type == AL_ADPCM_WAVE ? '.aifc' : '.aiff')
+    );
   }
 
   await fs.promises.writeFile(
@@ -454,16 +643,16 @@ async function bankToSource(sourceFile, outPath, generalMidi) {
         objByOffsetToDefs(bankFile.banks, 'bank'),
         objByOffsetToDefs(bankFile.instruments, 'instrument'),
         objByOffsetToDefs(bankFile.sounds, 'sound').map((soundDef) => {
-          const {wavetable, ...fields} = soundDef.value;
+          const {wavetable: wavetableOffset, ...fields} = soundDef.value;
           // replace offset with path to actual file
-          const aSampleTable = bankFile.wavetables[wavetable];
-          if (!aSampleTable)
+          const wavetable = bankFile.wavetables[wavetableOffset];
+          if (!wavetable)
             throw new Error(
-              `couldn't find wavetable ${wavetable} from ${soundDef.name}`
+              `couldn't find wavetable ${wavetableOffset} from ${soundDef.name}`
             );
           const value = {
             ...fields,
-            use: makeWavetableFilePath(aSampleTable.base),
+            use: makeWavetableFilePath(wavetable),
           };
           return {...soundDef, value};
         }),
@@ -474,27 +663,71 @@ async function bankToSource(sourceFile, outPath, generalMidi) {
   );
   await Promise.all(
     Object.keys(bankFile.wavetables).map((offset) => {
-      const aSampleTable = bankFile.wavetables[offset];
-      const pcm16BitData = tblBuffer.slice(
-        aSampleTable.base,
-        aSampleTable.base + aSampleTable.len
+      const wavetable = bankFile.wavetables[offset];
+      const soundWaveData = tblBuffer.slice(
+        tblStartOffset + wavetable.base,
+        tblStartOffset + wavetable.base + wavetable.len
       );
+      let aifcFields = null;
+      if (wavetable.type === AL_ADPCM_WAVE) {
+        const appl = [];
+        // write VADPCM AIFC with codebook
+        if (wavetable.waveInfo.book) {
+          const book = bankFile.books[wavetable.waveInfo.book];
+
+          appl.push({
+            applicationSignature: 'stoc',
+            data: VADPCMApplChunkStruct.serialize({
+              chunkName: VADPCM_CODE_NAME,
+              data: VADPCMBookChunkStruct.serialize({
+                version: VADPCM_VERSION,
+                ...book,
+              }),
+            }),
+          });
+        }
+
+        if (wavetable.waveInfo.loop) {
+          const loop = bankFile.loops[wavetable.waveInfo.loop];
+
+          appl.push({
+            applicationSignature: 'stoc',
+            data: VADPCMApplChunkStruct.serialize({
+              chunkName: VADPCM_LOOP_NAME,
+              data: VADPCMLoopChunkStruct.serialize({
+                version: VADPCM_VERSION,
+                nloops: 1,
+                aloops: [loop],
+              }),
+            }),
+          });
+        }
+
+        aifcFields = {
+          form: 'AIFC',
+          compressionType: 'VAPC',
+          compressionName: 'VADPCM ~4-1',
+          appl,
+        };
+      }
 
       const aiffFileContents = AIFF.serialize({
-        soundData: pcm16BitData,
+        soundData: soundWaveData,
         numChannels: 1,
         sampleSize: 16,
         sampleRate: 44100,
+        ...aifcFields,
       });
+
       return fs.promises.writeFile(
-        makeWavetableFilePath(aSampleTable.base),
+        makeWavetableFilePath(wavetable),
         aiffFileContents
       );
     })
   );
 }
 
-function loadAIFFWaveData(file) {
+function loadAIFFData(file) {
   const aiff = AIFF.parse(fs.readFileSync(file));
 
   let ssndChunk;
@@ -509,7 +742,7 @@ function loadAIFFWaveData(file) {
   if (!ssndChunk) {
     throw new Error(`file ${file} does not contain SSND chunk`);
   }
-  return ssndChunk.ssnd.soundData;
+  return {soundData: ssndChunk.ssnd.soundData};
 }
 
 function getSymbolField(obj, fieldName) {
@@ -744,7 +977,7 @@ class ALBankFileWriter {
           path.dirname(this.sourceFileLocation),
           obj.value.file
         );
-        const waveData = loadAIFFWaveData(resolvedLocation);
+        const waveData = loadAIFFData(resolvedLocation).soundData;
         const waveTblOffset = this.tbl.insertBuffer(waveData);
         const data = {
           base: waveTblOffset,
@@ -825,4 +1058,12 @@ function sourceToBank(defs, sourceFileLocation) {
 module.exports = {
   bankToSource,
   sourceToBank,
+  parseCtl,
+  ALBankFileStruct,
+  VADPCMApplChunkStruct,
+  VADPCMBookChunkStruct,
+  VADPCMLoopChunkStruct,
+  VADPCM_CODE_NAME,
+  VADPCM_LOOP_NAME,
+  VADPCM_VERSION,
 };

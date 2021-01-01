@@ -42,12 +42,32 @@ function getAlignedSizeForField(field, size) {
     : nanthrows(size);
 }
 
-class BufferStruct {
+class BufferStructBase {
   constructor(schema) {
     this.schema = schema;
     this.lastOffset = 0;
   }
 
+  parse(buffer, startOffset, contextData = null) {
+    // should return value for this field and update this.lastOffset
+  }
+
+  serialize(data, contextData = null) {
+    // should return buffer of serialized data
+  }
+
+  getStaticSize() {
+    throw new Error(
+      'getStaticSize not implemented on: ' + this.constructor.name
+    );
+  }
+
+  getName() {
+    return this.schema.name || this.constructor.name;
+  }
+}
+
+class BufferStruct extends BufferStructBase {
   parse(buffer, startOffset, contextData = null) {
     const partialResult = {};
     let offset = startOffset || 0;
@@ -79,7 +99,7 @@ class BufferStruct {
             }
             return {value, parsedSize: size};
           }
-        : type instanceof BufferStruct
+        : type instanceof BufferStructBase
         ? (buffer, startOffset) => {
             // console.log('parsing', type.getName(), 'at', startOffset);
             const value = type.parse(buffer, startOffset, contextData);
@@ -186,7 +206,7 @@ class BufferStruct {
     const type = nullthrows(field.type, `${fieldName} type`);
     if (
       !(
-        type instanceof BufferStruct ||
+        type instanceof BufferStructBase ||
         type instanceof BufferStructUnion ||
         type in FieldTypesToBufferMethods ||
         BytesTypes.has(type)
@@ -202,7 +222,7 @@ class BufferStruct {
         : field.size;
     if (BytesTypes.has(type)) {
       // allow size to be dynamic
-    } else if (type instanceof BufferStruct) {
+    } else if (type instanceof BufferStructBase) {
       // allow size to be dynamic
     } else if (type instanceof BufferStructUnion) {
       // size will be statically known (asserted in BufferStructUnion)
@@ -260,7 +280,7 @@ class BufferStruct {
 
             return partBuffer;
           }
-        : type instanceof BufferStruct
+        : type instanceof BufferStructBase
         ? (value) => type.serialize(value, contextData)
         : (value) => {
             const methodName = `write${getBufferMethodName(
@@ -336,20 +356,25 @@ class BufferStruct {
     return Buffer.concat(parts);
   }
 
+  _staticSize = null;
   getStaticSize() {
-    let size = 0;
-    for (const field of Object.values(this.schema.fields)) {
-      if (typeof field.size != 'number') {
-        throw new Error('cannot get static size of struct: ' + this.getName());
+    const prevSize = this._staticSize;
+    if (prevSize != null) {
+      return prevSize;
+    } else {
+      let size = 0;
+      for (const field of Object.values(this.schema.fields)) {
+        if (typeof field.size != 'number') {
+          throw new Error(
+            'cannot get static size of struct: ' + this.getName()
+          );
+        }
+        const alignedFieldSize = getAlignedSizeForField(field, field.size);
+        size += alignedFieldSize;
       }
-      const alignedFieldSize = getAlignedSizeForField(field, field.size);
-      size += alignedFieldSize;
+      this._staticSize = size;
+      return size;
     }
-    return size;
-  }
-
-  getName() {
-    return this.schema.name || this.constructor.name;
   }
 }
 
@@ -367,5 +392,6 @@ class BufferStructUnion {
 
 module.exports = {
   BufferStruct,
+  BufferStructBase,
   BufferStructUnion,
 };
