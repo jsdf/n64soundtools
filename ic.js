@@ -5,8 +5,8 @@
 
 const fs = require('fs');
 const arg = require('arg');
-const parser = require('./instparser');
 const {sourceToBank} = require('./soundtools');
+const {parseWithNiceErrors} = require('./instparserapi');
 
 const args = arg({
   // Types
@@ -31,28 +31,6 @@ if (!sourceFile) {
 
 const contents = fs.readFileSync(sourceFile, 'utf8');
 
-let parsed;
-try {
-  parsed = parser.parse(contents);
-  // console.log(parsed);
-} catch (err) {
-  const loc = err.location;
-  console.error(
-    `Error in ${args._[0]}` +
-      (loc ? ` at line ${loc.start.line} column ${loc.start.line}` : '') +
-      ':'
-  );
-
-  if (err.message.startsWith('Expected Error parsing')) {
-    console.error(
-      `${err.expected.map((e) => e.description).join('\n')}
-in:
-${err.found}`
-    );
-  } else {
-    console.error(err.message);
-  }
-  process.exit(1);
-}
+const parsed = parseWithNiceErrors(contents, sourceFile);
 
 sourceToBank(parsed, sourceFile).writeBankFile(args['--out'] || 'tst');
