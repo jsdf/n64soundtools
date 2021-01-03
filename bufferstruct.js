@@ -42,6 +42,28 @@ function getAlignedSizeForField(field, size) {
     : nanthrows(size);
 }
 
+/*
+  schema: an object mapping field names to a definition object.
+  definitions can have the following properties: 
+  type: how to interpret the binary data. options:
+    uint -> number
+    int -> number
+    float -> number
+    double -> number
+    bigint -> BigInt
+    biguint -> BigInt
+    char -> number
+    bytes -> Buffer
+    utf8 -> string
+    BufferStructBase | BufferStruct | BufferStructUnion -> nested object
+  size: serialized field size in bytes
+  endian: endianness used when interpreting binary data
+  default: default value used when serializing if value not provided
+  size: size of field in bytes. can be fixed size or function determining size
+  arrayElements: treat this field as an array. function returning number of items
+  align: pad the field to a multiple of this number
+ */
+
 class BufferStructBase {
   constructor(schema) {
     this.schema = schema;
@@ -260,12 +282,17 @@ class BufferStruct extends BufferStructBase {
         contextData
       );
 
+      let value;
       if (!(fieldName in data)) {
-        throw new Error(
-          `missing field ${fieldName} when serializing ${this.getName()}`
-        );
+        if ('default' in field) {
+          value = field.default;
+        } else {
+          throw new Error(
+            `missing field ${fieldName} when serializing ${this.getName()}`
+          );
+        }
       }
-      const value = data[fieldName];
+      value = data[fieldName];
 
       const serialize = BytesTypes.has(type)
         ? (value) => {

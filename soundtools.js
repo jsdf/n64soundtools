@@ -272,7 +272,7 @@ const ALWaveTableStruct = new BufferStruct({
     len: {type: 'int', size: 4},
     type: {type: 'uint', size: 1},
     flags: {type: 'uint', size: 1},
-    pad: {type: 'uint', size: 2}, // simulate c struct member alignment behavior
+    pad: {type: 'uint', size: 2, default: 0}, // simulate c struct member alignment behavior
     waveInfo: {
       type: new BufferStructUnion({
         members: [ALADPCMWaveInfoStruct, ALRAWWaveInfoStruct],
@@ -1040,9 +1040,10 @@ class ALBankFileWriter {
     const banksOffsets = banks.map((bank) => this.dependOnObject(bank.obj));
     // replace header with corrected offsets
     bankFileHeader = makeHeader(banksOffsets);
-    console.log('bankFileHeader', bankFileHeader, {
-      banksOffsets: banksOffsets.map((v) => v.toString(16)),
-    });
+    DEBUG &&
+      console.log('bankFileHeader', bankFileHeader, {
+        banksOffsets: banksOffsets.map((v) => v.toString(16)),
+      });
     this.ctl.replaceBuffer(0, bankFileHeader);
 
     fs.writeFileSync(filePrefix + '.ctl', this.ctl.build());
