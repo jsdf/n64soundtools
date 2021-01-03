@@ -7,19 +7,3 @@ body {
 * {
   box-sizing: border-box;
 }
-
-.pane-thread {
-  width: 70vw;
-  overflow-x: hidden;
-  overflow-y: auto;
-  border: solid 1px #ccc;
-  margin: 8px;
-  padding: 8px;
-}
-.pane-log {
-  width: 30vw;
-  overflow: hidden;
-  border: solid 1px #ccc;
-  margin: 8px;
-  padding: 8px;
-}

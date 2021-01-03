@@ -1,16 +1,39 @@
 const socketio = require('socket.io');
 const fs = require('fs');
+const ipc = require('node-ipc');
+require('./logger')(__filename).replaceConsole();
+
+const {parseWithNiceErrors} = require('../instparserapi');
+
+const RequestMap = require('./src/RequestMap');
 
 const DEV = process.env.NODE_ENV === 'development';
 
+// enable everdrive integration?
 const EVERDRIVE = false;
 
+const parentSocketID = process.env.IPC_SOCKET_ID;
+
+const USE_IPC = true;
+
+process.on('uncaughtException', (err) => {
+  console.error(err);
+  process.exit(1);
+});
+
+// this can be embedded in the create-react-app server or any express server
+// via the attachToApp method
+// this process communicates with the web client ('client') via socket.io and
+// with the parent electron process ('electron') via node-ipc
 class Applet {
   dbgif = null;
 
   state = {
     serverErrors: [],
   };
+  client = null;
+
+  requestMap = new RequestMap();
 
   setState(stateUpdate) {
     Object.assign(this.state, stateUpdate);
@@ -37,14 +60,49 @@ class Applet {
     });
   }
 
-  handleParentCommand(cmd, data) {
+  handleElectronCommand({cmd, data, requestID, error}) {
+    if (requestID != null) {
+      this.requestMap.handleResponse(
+        requestID,
+        error != null ? error : data,
+        error != null
+      );
+      return;
+    }
     switch (cmd) {
-      case 'fileSelected':
-        break;
+      default:
+        console.error('unknown parent command', cmd);
+        return;
     }
   }
 
-  handleClientCommand(cmd, data) {
+  sendElectronRequest(msg) {
+    const promise = this.requestMap.handleRequest(msg.requestID);
+    this.sendElectronCommand(msg);
+    return promise;
+  }
+
+  handleClientRequest({cmd, requestID}, promise) {
+    promise
+      .then((data) => {
+        this.sendClientCommand({
+          cmd,
+          data,
+          requestID,
+        });
+      })
+      .catch((error) => {
+        this.handleError(error);
+        this.sendClientCommand({
+          cmd,
+          error,
+          requestID,
+        });
+      });
+    return promise;
+  }
+
+  handleClientCommand({cmd, data, requestID}) {
     switch (cmd) {
       case 'b':
       case 'p':
@@ -54,19 +112,102 @@ class Applet {
         //   this.dbgif.sendCommand(cmd, data);
         // }
         break;
-      case 'selectFile':
-        process.send({cmd: 'selectFile', id: String(Math.random())});
+      case 'showOpenDialog':
+        this.handleClientRequest(
+          {cmd, requestID},
+          this.sendElectronRequest({
+            cmd: 'showOpenDialog',
+            data,
+            requestID,
+          }).then(async (response) => {
+            const files = await Promise.all(
+              response.filePaths.map(async (filePath) => {
+                const contents = await fs.promises.readFile(filePath);
+                return {filePath, contents};
+              })
+            );
+
+            return {files};
+          })
+        );
+        break;
+      case 'showInstrumentDialog':
+        this.handleClientRequest(
+          {cmd, requestID},
+          this.sendElectronRequest({
+            cmd: 'showOpenDialog',
+            data: {properties: ['openFile']},
+            requestID,
+          }).then(async (response) => {
+            if (response.filePaths[0] == null) return null;
+            const sourceFile = response.filePaths[0];
+
+            const contents = await fs.promises.readFile(sourceFile, 'utf8');
+
+            const parsed = parseWithNiceErrors(contents, sourceFile);
+
+            return parsed;
+          })
+        );
         break;
     }
   }
 
-  attachParentHandlers() {
-    process.on('message', (msg) => {
-      console.log('message from parent', msg);
-      if (msg.cmd) {
-        this.handleParentCommand(msg.cmd, msg.data);
-      }
+  sendElectronCommand(msg) {
+    if (USE_IPC) {
+      ipc.of[parentSocketID].emit('message', msg);
+    } else {
+      process.send(msg);
+    }
+  }
+
+  sendClientCommand({cmd, data, error, requestID}) {
+    this.client.socket.emit('cmd', {
+      cmd,
+      data,
+      requestID,
+      error,
     });
+  }
+
+  attachElectronHandlers() {
+    if (USE_IPC) {
+      if (parentSocketID == null) {
+        console.error(`no parentSocketID`);
+        return;
+      }
+      ipc.config.id = `n64dawapplet${process.pid}`;
+      ipc.config.retry = 1500;
+      ipc.config.silent = true;
+
+      ipc.connectTo(parentSocketID, () => {
+        ipc.of[parentSocketID].on('connect', () => {
+          console.log('connected to ' + parentSocketID, ipc.config.delay);
+          ipc.of[parentSocketID].emit('hello', {id: ipc.config.id});
+        });
+        ipc.of[parentSocketID].on('disconnect', () => {
+          console.log('disconnected from ' + parentSocketID);
+        });
+        ipc.of[parentSocketID].on('message', (msg) => {
+          console.log('got a message from ' + parentSocketID, msg);
+          if (msg.cmd) {
+            this.handleElectronCommand(msg);
+          }
+        });
+      });
+    } else {
+      // node fork ipc
+      if (!process.send) {
+        console.error('no node fork ipc parent');
+        return;
+      }
+      process.on('message', (msg) => {
+        console.log('message from parent', msg);
+        if (msg.cmd) {
+          this.handleElectronCommand(msg);
+        }
+      });
+    }
   }
 
   attachClientHandlers(socket) {
@@ -74,12 +215,19 @@ class Applet {
     socket.emit('state', this.state);
 
     // subscribe to handle commands send from client
-    socket.on('cmd', ({cmd, data}) => {
-      this.handleClientCommand(cmd, data);
-    });
+    const cmdHandler = (msg) => {
+      this.handleClientCommand(msg);
+    };
+    socket.on('cmd', cmdHandler);
+
+    return () => {
+      socket.off('cmd', cmdHandler);
+    };
   }
 
-  async attachToApp(app, server) {
+  start() {
+    this.attachElectronHandlers();
+
     if (EVERDRIVE) {
       const DebuggerInterface = DEV
         ? require('../../ed64log/ed64logjs/dbgif')
@@ -88,7 +236,9 @@ class Applet {
       const dbgif = new DebuggerInterface();
       this.dbgif = dbgif;
     }
+  }
 
+  async attachToApp(app, server) {
     this.io = socketio(server);
 
     try {
@@ -103,16 +253,6 @@ class Applet {
         console.error(
           'unable to open serial port to ftdi device, is it connected?'
         );
-
-        // load last state
-        try {
-          Object.assign(
-            this.state,
-            JSON.parse(fs.readFileSync('laststate.json', {encoding: 'utf8'}))
-          );
-        } catch (err) {
-          console.log(err);
-        }
       } else {
         throw new Error(
           'unable to open serial port to ftdi device, is it connected?'
@@ -120,8 +260,25 @@ class Applet {
       }
     }
 
+    // load last state
+    try {
+      Object.assign(
+        this.state,
+        JSON.parse(fs.readFileSync('laststate.json', {encoding: 'utf8'}))
+      );
+    } catch (err) {
+      console.log(err);
+    }
+
     this.io.on('connection', (socket) => {
-      this.attachClientHandlers(socket);
+      // only one client at a time
+      if (this.client) {
+        this.client.unsubscribe();
+        this.client.socket.disconnect();
+        this.client = null;
+      }
+      const unsubscribe = this.attachClientHandlers(socket);
+      this.client = {socket, unsubscribe};
     });
   }
 }

@@ -10,38 +10,40 @@ import {
   WheelZoomBehavior,
   WheelScrollBehavior,
   zoomAtPoint,
-} from './roygbiv/viewport';
+} from './flatland/viewport';
 
 import {
   useCanvasContext2d,
   drawRect,
   drawTextRect,
-} from './roygbiv/canvasUtils';
+} from './flatland/canvasUtils';
 
 import {
   getIntersectingEvent,
   findIntersectingEvents,
-} from './roygbiv/renderableRect';
+} from './flatland/renderableRect';
 
-import {useWindowDimensions, getDPR} from './roygbiv/windowUtils';
+import {useWindowDimensions, getDPR} from './flatland/windowUtils';
 
-import {BehaviorController, Behavior, useBehaviors} from './roygbiv/behavior';
+import {BehaviorController, Behavior, useBehaviors} from './flatland/behavior';
 
-import Vector2 from './roygbiv/Vector2';
-import Rect from './roygbiv/Rect';
-import {range, scaleDiscreteQuantized} from './roygbiv/utils';
+import Vector2 from './flatland/Vector2';
+import Rect from './flatland/Rect';
+import {range, scaleDiscreteQuantized} from './flatland/utils';
+import {midiNotesRange, getExtents} from './miditrack';
 
 import {
   DragEventBehavior,
   SelectBoxBehavior,
   SelectBox,
-} from './roygbiv/selection';
+} from './flatland/selection';
 
-import useLocalStorageAsync from './roygbiv/useLocalStorageAsync';
-import Controls from './roygbiv/Controls';
-import {TooltipBehavior, Tooltip} from './roygbiv/Tooltip';
+import useLocalStorageAsync from './flatland/useLocalStorageAsync';
+import Controls from './flatland/Controls';
+import {TooltipBehavior, Tooltip} from './flatland/Tooltip';
 
-import {wrap} from './roygbiv/mathUtils';
+import {wrap} from './flatland/mathUtils';
+import useGlobalState from './useGlobalState';
 
 const {
   useEffect,
@@ -66,39 +68,6 @@ function colorForNote(note) {
 const TIMELINE_ROW_HEIGHT = 20;
 const QUARTER_NOTE_WIDTH = 10;
 
-const midiNotesRange = range(127);
-
-function getExtents(events) {
-  if (events.length === 0) {
-    return {
-      start: 0,
-      end: 0,
-      size: 0,
-      minMidi: 0,
-      maxMidi: midiNotesRange.length - 1,
-    };
-  }
-
-  const minMidi = events.reduce((acc, ev) => Math.min(acc, ev.midi), 0);
-  const maxMidi = events.reduce(
-    (acc, ev) => Math.max(acc, ev.midi),
-    midiNotesRange.length - 1
-  );
-
-  const start = events.reduce((acc, ev) => Math.min(acc, ev.time), Infinity);
-  const end = events.reduce(
-    (acc, ev) => Math.max(acc, ev.time + ev.duration),
-    -Infinity
-  );
-  return {
-    start,
-    end,
-    size: end - start,
-    minMidi,
-    maxMidi,
-  };
-}
-
 function TooltipContent({event}) {
   return (
     <span>
@@ -112,7 +81,11 @@ const LOCALSTORAGE_CONFIG = {
   schemaVersion: '1',
 };
 
-function MidiTrackEditor({events, setEvents}) {
+function MidiTrackEditor({events, setEvents, width, height}) {
+  const canvasLogicalDimensions = useMemo(() => ({width, height}), [
+    width,
+    height,
+  ]);
   const {canvasRef, ctx, canvas} = useCanvasContext2d();
 
   const eventsMap = useMemo(() => new Map(events.map((ev) => [ev.id, ev])), [
@@ -151,20 +124,15 @@ function MidiTrackEditor({events, setEvents}) {
   const renderedRectsRef = useRef([]);
   const [selection, setSelection] = useState(new Set());
 
-  const [mode, setMode] = useLocalStorageAsync(
-    'mode',
-    'select',
-    LOCALSTORAGE_CONFIG
-  );
+  // retain this across different tracks
+  const [mode, setMode] = useGlobalState(`${module.id}-mode`, 'select');
 
-  const [viewportState, setViewportState] = useLocalStorageAsync(
-    'viewportState',
-    makeViewportState,
-    {
-      ...ViewportStateSerializer,
-      ...LOCALSTORAGE_CONFIG,
-    }
-  );
+  const [viewportState, setViewportState] = useState(() => {
+    const initialState = makeViewportState();
+
+    initialState.pan.y = quantizerY.invert(extents.minMidi);
+    return initialState;
+  });
 
   const viewport = useViewport(viewportState);
 
@@ -289,9 +257,6 @@ function MidiTrackEditor({events, setEvents}) {
     }
   );
 
-  const windowDimensions = useWindowDimensions();
-  const canvasLogicalDimensions = windowDimensions;
-
   // rendering
   useEffect(() => {
     if (!ctx) return;
@@ -344,7 +309,7 @@ function MidiTrackEditor({events, setEvents}) {
         {
           fillStyle: colorForNote(note),
         },
-        {offset: {x: 3, y: 14}}
+        {offset: {x: 3, y: 10 + rect.size.y / 2 - 12 / 2}}
       );
     }
 
@@ -387,7 +352,7 @@ function MidiTrackEditor({events, setEvents}) {
   ]);
 
   return (
-    <div>
+    <div style={{position: 'relative'}}>
       <SelectBox ref={selectBoxRef} />
       <Tooltip ref={tooltipRef} component={TooltipContent} />
       <canvas

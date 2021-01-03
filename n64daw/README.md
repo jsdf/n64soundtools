@@ -1,4 +1,5 @@
-# remote sound tool
+# n64daw
+## cli
 
 stream midi to an n64
 
@@ -15,6 +16,13 @@ npm install # just once after cloning this repo
 npm start
 ```
 
+
+## gui
+
+```
+npm run electron
+```
+look for errors in console, electron.js.log and applet.js.log
 
 ## build & deploy the rom
 

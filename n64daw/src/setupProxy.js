@@ -1,5 +1,6 @@
-const Applet = require('../../applet');
+const Applet = require('../applet');
 const applet = new Applet();
+applet.start();
 
 module.exports = function (app) {
   let httpServer;
