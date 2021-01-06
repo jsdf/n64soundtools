@@ -20,6 +20,7 @@ import ResponsiveBlock from './ResponsiveBlock';
 import throttleTrailing from './throttleTrailing';
 import Player from './player';
 import RequestMap from './RequestMap';
+import * as webAudio from './webAudio';
 
 var searchParams = new URLSearchParams(window.location.search);
 
@@ -320,9 +321,18 @@ function App() {
     };
   }, [midiState, outPort]);
 
+  const webAudioPlayerRef = useRef(null);
+  useEffect(() => {
+    webAudio.makeSampler();
+    webAudioPlayerRef.current = webAudio.makePlayer();
+  }, []);
+
   const pickMidiFile = useCallback(() => {
     apiRef.current
-      .sendRequest('showOpenDialog', {properties: ['openFile']})
+      .sendRequest('showOpenDialog', {
+        properties: ['openFile'],
+        filters: [{name: 'MIDI Files', extensions: ['mid']}],
+      })
       .then((result) => {
         const midiFile = result.files[0];
         if (midiFile) {
@@ -417,9 +427,31 @@ function App() {
         </div>
         <div style={{...styles.control}}>
           <button onClick={pickMidiFile}>Open midi file...</button>
+          <button onClick={pickInstrumentFile}>Open instrument file...</button>
         </div>
         <div style={{...styles.control}}>
-          <button onClick={pickInstrumentFile}>Open instrument file...</button>
+          <button
+            onClick={() => {
+              const player = webAudioPlayerRef.current;
+              player.samplerPromise
+                .then((sampler) => {
+                  player.play(sampler, midiState);
+                })
+                .catch((err) => {
+                  console.error(err);
+                  debugger;
+                });
+            }}
+          >
+            &#9658;
+          </button>
+          <button
+            onClick={() => {
+              webAudioPlayerRef.current.stop();
+            }}
+          >
+            &#9632;
+          </button>
         </div>
       </div>
       <div style={{flex: 1, overflow: 'hidden'}}>
@@ -445,6 +477,7 @@ function App() {
                               height: '100%',
                               border: 'solid 1px black',
                               overflow: 'auto',
+                              backgroundColor: '#555',
                             }}
                           >
                             <MidiTracksView

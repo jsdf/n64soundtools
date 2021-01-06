@@ -1,2 +1,2 @@
 #!/bin/bash
-rsync -r flatland ~/code/roygbiv/src
+rsync -r src/flatland/ ~/code/flatland/src/

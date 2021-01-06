@@ -100,6 +100,7 @@ export default function SplitPane({
           lineHeight: '10px',
           textAlign: 'center',
           color: 'white',
+          userSelect: 'none',
         }}
         onMouseDown={onMouseDown}
         onMouseUp={onMouseUp}

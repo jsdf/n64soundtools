@@ -13,7 +13,7 @@ import Rect from './flatland/Rect';
 
 const styles = {
   selected: {
-    backgroundColor: '#999',
+    backgroundColor: '#777',
   },
   deselected: {
     backgroundColor: '#555',

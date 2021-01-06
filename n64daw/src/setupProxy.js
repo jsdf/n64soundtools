@@ -4,11 +4,14 @@ applet.start();
 
 module.exports = function (app) {
   let httpServer;
+
+  applet.registerMiddleware(app);
+
   app.use((req, res, next) => {
     if (!httpServer) {
       httpServer = req.connection.server;
       const port = httpServer.address().port;
-      applet.attachToApp(app, httpServer);
+      applet.attachToServer(httpServer);
     }
     next();
   });

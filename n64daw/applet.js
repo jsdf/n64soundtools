@@ -1,9 +1,12 @@
 const socketio = require('socket.io');
 const fs = require('fs');
+const path = require('path');
 const ipc = require('node-ipc');
 require('./logger')(__filename).replaceConsole();
 
 const {parseWithNiceErrors} = require('../instparserapi');
+
+const audioConvert = require('../audioconvert');
 
 const RequestMap = require('./src/RequestMap');
 
@@ -22,7 +25,7 @@ process.on('uncaughtException', (err) => {
 });
 
 // this can be embedded in the create-react-app server or any express server
-// via the attachToApp method
+// via the registerMiddleware && attachToServer methods
 // this process communicates with the web client ('client') via socket.io and
 // with the parent electron process ('electron') via node-ipc
 class Applet {
@@ -136,7 +139,15 @@ class Applet {
           {cmd, requestID},
           this.sendElectronRequest({
             cmd: 'showOpenDialog',
-            data: {properties: ['openFile']},
+            data: {
+              properties: ['openFile'],
+              filters: [
+                {
+                  name: 'Instrument Compiler Source Files',
+                  extensions: ['inst'],
+                },
+              ],
+            },
             requestID,
           }).then(async (response) => {
             if (response.filePaths[0] == null) return null;
@@ -238,9 +249,7 @@ class Applet {
     }
   }
 
-  async attachToApp(app, server) {
-    this.io = socketio(server);
-
+  async startEverdriveConnection() {
     try {
       if (EVERDRIVE) {
         await dbgif.start();
@@ -259,6 +268,22 @@ class Applet {
         );
       }
     }
+  }
+
+  registerMiddleware(app) {
+    app.get('/sample/*', (req, res) => {
+      if (req.params[0]) {
+        const file = req.params[0];
+        fs.promises.readFile(path.resolve(file)).then((filedata) => {
+          res.setHeader('content-type', 'audio/wave');
+          res.send(audioConvert.aiffToWave(filedata));
+        });
+      }
+    });
+  }
+
+  attachToServer(server) {
+    this.io = socketio(server);
 
     // load last state
     try {
@@ -267,7 +292,7 @@ class Applet {
         JSON.parse(fs.readFileSync('laststate.json', {encoding: 'utf8'}))
       );
     } catch (err) {
-      console.log(err);
+      // console.log(err);
     }
 
     this.io.on('connection', (socket) => {
@@ -280,6 +305,8 @@ class Applet {
       const unsubscribe = this.attachClientHandlers(socket);
       this.client = {socket, unsubscribe};
     });
+
+    this.startEverdriveConnection();
   }
 }
 
