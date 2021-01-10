@@ -13,7 +13,7 @@ import './App.css';
 import Details from './Details';
 import MidiTrackEditor from './MidiTrackEditor';
 import MidiTracksView from './MidiTracksView';
-import SelectWithLabel from './SelectWithLabel';
+import MidiPortSelector from './MidiPortSelector';
 import useStateWithUndoHistory from './useStateWithUndoHistory';
 import SplitPane from './SplitPane';
 import ResponsiveBlock from './ResponsiveBlock';
@@ -21,6 +21,8 @@ import throttleTrailing from './throttleTrailing';
 import Player from './player';
 import RequestMap from './RequestMap';
 import * as webAudio from './webAudio';
+import {Keyboard} from './keyboard';
+import useRefOnce from './flatland/useRefOnce';
 
 var searchParams = new URLSearchParams(window.location.search);
 
@@ -89,58 +91,6 @@ const storeMidiStateToLocalStorage = throttleTrailing((midiState) => {
   }
 }, 500);
 
-function MidiPortSelector({direction, port, onChange}) {
-  const [ports, setPorts] = useState([]);
-  const mountedRef = useRef(false);
-  const midiAccessRef = useRef(null);
-
-  useEffect(() => {
-    mountedRef.current = true;
-
-    function onStateChange() {
-      if (mountedRef.current && midiAccessRef.current) {
-        setPorts(
-          midiAccessRef.current[direction === 'in' ? 'inputs' : 'outputs']
-        );
-        if (
-          !midiAccessRef.current[direction === 'in' ? 'inputs' : 'outputs'].get(
-            port?.id
-          )
-        ) {
-          onChange(null);
-        }
-      }
-    }
-
-    navigator.requestMIDIAccess().then((midiAccess) => {
-      midiAccessRef.current = midiAccess;
-      midiAccess.addEventListener('statechange', onStateChange);
-      if (mountedRef.current) {
-        const initialPorts =
-          midiAccess[direction === 'in' ? 'inputs' : 'outputs'];
-        setPorts(initialPorts);
-        const ports = [...initialPorts.values()];
-        if (ports.length) {
-          onChange(ports[0]);
-        }
-      }
-    });
-
-    return () => {
-      mountedRef.current = false;
-      if (midiAccessRef.current) {
-        midiAccessRef.current.removeEventListener('statechange', onStateChange);
-      }
-    };
-  }, []);
-
-  return (
-    <SelectWithLabel
-      label="Midi Out"
-      options={[...ports.values()].map((v) => ({value: v.id, label: v.name}))}
-      value={port?.id}
-      onChange={(id) => onChange(ports.get(id))}
-    />
   );
 }
 
@@ -260,7 +210,6 @@ function App() {
     };
   }, []);
 
-  const historyRef = useRef([]);
   const [
     midiState,
     setMidiStateWithUndo,
@@ -270,6 +219,8 @@ function App() {
     validateHistoryChange: (state) => state != null,
   });
 
+  const [instrumentBank, setInstrumentBank] = useState(null);
+
   useEffect(() => {
     storeMidiStateToLocalStorage(midiState);
   }, [midiState]);
@@ -277,26 +228,25 @@ function App() {
   const [outPort, setOutPort] = useState(null);
   const playerAPIRef = useRef(null);
 
+  const webAudioPlayerRef = useRefOnce(() => {
+    webAudio.makeSampler();
+    return webAudio.makePlayer();
+  });
+  const extraMidiPorts = useMemo(() => [webAudioPlayerRef.current.midiOut], [
+    webAudioPlayerRef,
+  ]);
+
   useEffect(() => {
     if (!midiState) return;
     if (!outPort) return;
     const player = new Player(midiState);
 
-    window.eventLog = [];
-
     function tick() {
       setTimeout(() => {
-        const now = performance.now();
         const events = player.getPendingEvents(16);
 
         events.forEach((event) => {
           const midiMessage = Array.from(event.data);
-          const prevEvent = window.eventLog[window.eventLog.length - 1];
-          window.eventLog.push({
-            scheduleDelta: player.startTime + event.time - now,
-            sincePrevEvent: prevEvent ? prevEvent.time - event.time : null,
-            ...event,
-          });
           outPort.send(midiMessage, player.startTime + event.time);
         });
         if (player.playing) {
@@ -320,12 +270,6 @@ function App() {
       playerAPI.stop();
     };
   }, [midiState, outPort]);
-
-  const webAudioPlayerRef = useRef(null);
-  useEffect(() => {
-    webAudio.makeSampler();
-    webAudioPlayerRef.current = webAudio.makePlayer();
-  }, []);
 
   const pickMidiFile = useCallback(() => {
     apiRef.current
@@ -423,6 +367,7 @@ function App() {
             direction="out"
             port={outPort}
             onChange={setOutPort}
+            extraPorts={extraMidiPorts}
           />
         </div>
         <div style={{...styles.control}}>
@@ -430,24 +375,22 @@ function App() {
           <button onClick={pickInstrumentFile}>Open instrument file...</button>
         </div>
         <div style={{...styles.control}}>
+          <Keyboard instrument={outPort} />
           <button
             onClick={() => {
-              const player = webAudioPlayerRef.current;
-              player.samplerPromise
-                .then((sampler) => {
-                  player.play(sampler, midiState);
-                })
-                .catch((err) => {
-                  console.error(err);
-                  debugger;
-                });
+              // webAudioPlayerRef.current.play(midiState).catch((err) => {
+              //   console.error(err);
+              //   debugger;
+              // });
+              playerAPIRef.current.play();
             }}
           >
             &#9658;
           </button>
           <button
             onClick={() => {
-              webAudioPlayerRef.current.stop();
+              playerAPIRef.current.stop();
+              // webAudioPlayerRef.current.stop();
             }}
           >
             &#9632;
@@ -499,20 +442,22 @@ function App() {
                             <ResponsiveBlock
                               style={{height: '100%', overflow: 'hidden'}}
                             >
-                              {(dimensions) => (
-                                <MidiTrackEditor
-                                  key={`${midiState.fileID}_${selectedTrackIndex}`}
-                                  {...dimensions}
-                                  events={selectedTrack.notes}
-                                  setEvents={(updater, updateType) =>
-                                    setEventsForTrack(
-                                      updater,
-                                      selectedTrackIndex,
-                                      updateType
-                                    )
-                                  }
-                                />
-                              )}
+                              {(dimensions) =>
+                                !dimensions ? null : (
+                                  <MidiTrackEditor
+                                    key={`${midiState.fileID}_${selectedTrackIndex}`}
+                                    {...dimensions}
+                                    events={selectedTrack.notes}
+                                    setEvents={(updater, updateType) =>
+                                      setEventsForTrack(
+                                        updater,
+                                        selectedTrackIndex,
+                                        updateType
+                                      )
+                                    }
+                                  />
+                                )
+                              }
                             </ResponsiveBlock>
                           </div>
                         }

@@ -1,4 +1,4 @@
-import {range, scaleDiscreteQuantized} from './flatland/utils';
+import {range} from './flatland/utils';
 export const midiNotesRange = range(127);
 
 export function getExtents(events) {

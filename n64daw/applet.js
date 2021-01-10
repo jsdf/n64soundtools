@@ -238,22 +238,19 @@ class Applet {
 
   start() {
     this.attachElectronHandlers();
-
-    if (EVERDRIVE) {
-      const DebuggerInterface = DEV
-        ? require('../../ed64log/ed64logjs/dbgif')
-        : require('ed64logjs/dbgif');
-
-      const dbgif = new DebuggerInterface();
-      this.dbgif = dbgif;
-    }
   }
 
   async startEverdriveConnection() {
     try {
       if (EVERDRIVE) {
-        await dbgif.start();
-        this.attachDebuggerInferfaceHandlers(dbgif);
+        const DebuggerInterface = DEV
+          ? require('../../ed64log/ed64logjs/dbgif')
+          : require('ed64logjs/dbgif');
+
+        const dbgif = new DebuggerInterface();
+        this.dbgif = dbgif;
+        await this.dbgif.start();
+        this.attachDebuggerInferfaceHandlers(this.dbgif);
       }
     } catch (err) {
       console.error(err);
@@ -276,6 +273,7 @@ class Applet {
         const file = req.params[0];
         fs.promises.readFile(path.resolve(file)).then((filedata) => {
           res.setHeader('content-type', 'audio/wave');
+          res.set('Cache-control', 'public, max-age=300');
           res.send(audioConvert.aiffToWave(filedata));
         });
       }

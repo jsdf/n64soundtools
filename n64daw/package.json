@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "description": "",
   "scripts": {
-    "start": "node server.js",
+    "start": "NODE_ENV=development electron .",
     "electron": "NODE_ENV=development electron .",
     "dev": "NODE_ENV=development node server.js",
     "cra-start": "react-scripts start",
@@ -13,7 +13,7 @@
   },
   "main": "electron.js",
   "bin": {
-    "ed64-soundtool": "./server.js"
+    "ed64-soundtool": "./cli.js"
   },
   "author": "James Friend <james@jsdf.co> (http://jsdf.co/)",
   "license": "ISC",

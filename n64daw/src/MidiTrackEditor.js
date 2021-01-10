@@ -1,15 +1,13 @@
 import React from 'react';
-import ReactDOM from 'react-dom';
 import {Note as TonalNote} from '@tonaljs/tonal';
 
 import {
   useViewport,
   makeViewportState,
-  ViewportStateSerializer,
+  makeViewportStateFromExtents,
   DragPanBehavior,
   WheelZoomBehavior,
   WheelScrollBehavior,
-  zoomAtPoint,
 } from './flatland/viewport';
 
 import {
@@ -23,13 +21,12 @@ import {
   findIntersectingEvents,
 } from './flatland/renderableRect';
 
-import {useWindowDimensions, getDPR} from './flatland/windowUtils';
+import {getDPR} from './flatland/windowUtils';
 
-import {BehaviorController, Behavior, useBehaviors} from './flatland/behavior';
+import {BehaviorController, useBehaviors} from './flatland/behavior';
 
-import Vector2 from './flatland/Vector2';
 import Rect from './flatland/Rect';
-import {range, scaleDiscreteQuantized} from './flatland/utils';
+import {scaleDiscreteQuantized} from './flatland/utils';
 import {midiNotesRange, getExtents} from './miditrack';
 
 import {
@@ -38,22 +35,12 @@ import {
   SelectBox,
 } from './flatland/selection';
 
-import useLocalStorageAsync from './flatland/useLocalStorageAsync';
 import Controls from './flatland/Controls';
 import {TooltipBehavior, Tooltip} from './flatland/Tooltip';
 
-import {wrap} from './flatland/mathUtils';
 import useGlobalState from './useGlobalState';
 
-const {
-  useEffect,
-  useMemo,
-  useRef,
-  useState,
-  useCallback,
-  useImperativeHandle,
-  forwardRef,
-} = React;
+const {useEffect, useMemo, useRef, useState, useCallback} = React;
 
 const colors = {
   whiteKey: '#eee',
@@ -76,16 +63,8 @@ function TooltipContent({event}) {
   );
 }
 
-const LOCALSTORAGE_CONFIG = {
-  baseKey: 'n64soundtools-miditrackeditor',
-  schemaVersion: '1',
-};
-
 function MidiTrackEditor({events, setEvents, width, height}) {
-  const canvasLogicalDimensions = useMemo(() => ({width, height}), [
-    width,
-    height,
-  ]);
+  const viewportDimensions = useMemo(() => ({width, height}), [width, height]);
   const {canvasRef, ctx, canvas} = useCanvasContext2d();
 
   const eventsMap = useMemo(() => new Map(events.map((ev) => [ev.id, ev])), [
@@ -103,6 +82,10 @@ function MidiTrackEditor({events, setEvents, width, height}) {
         {
           stepSize: 1,
           round: Math.round,
+          alias: {
+            domain: 'pixels',
+            range: 'midiNotes',
+          },
         }
       ),
     []
@@ -116,9 +99,39 @@ function MidiTrackEditor({events, setEvents, width, height}) {
         {
           stepSize: 1,
           round: Math.round,
+          alias: {
+            domain: 'pixels',
+            range: 'quarterNotes',
+          },
         }
       ),
     []
+  );
+
+  const getViewportStateZoomedToExtents = useCallback(
+    () =>
+      makeViewportStateFromExtents(
+        {
+          min: {
+            x: quantizerX.to('pixels', extents.start),
+            y: quantizerY.to('pixels', extents.minMidi),
+          },
+          max: {
+            x: quantizerX.to('pixels', extents.end),
+            y: quantizerY.to('pixels', extents.maxMidi + 1),
+          },
+        },
+        viewportDimensions
+      ),
+    [
+      quantizerX,
+      quantizerY,
+      extents.start,
+      extents.minMidi,
+      extents.end,
+      extents.maxMidi,
+      viewportDimensions,
+    ]
   );
 
   const renderedRectsRef = useRef([]);
@@ -129,7 +142,7 @@ function MidiTrackEditor({events, setEvents, width, height}) {
 
   const [viewportState, setViewportState] = useState(() => {
     const initialState = makeViewportState();
-
+    initialState.zoom.y = 0.7;
     initialState.pan.y = quantizerY.invert(extents.minMidi);
     return initialState;
   });
@@ -167,7 +180,7 @@ function MidiTrackEditor({events, setEvents, width, height}) {
         updateType
       );
     },
-    [viewport, quantizerX, quantizerY]
+    [viewport, quantizerX, quantizerY, setEvents]
   );
 
   const onDragMove = useCallback(
@@ -263,11 +276,11 @@ function MidiTrackEditor({events, setEvents, width, height}) {
     const {canvas} = ctx;
     const dpr = getDPR();
     // clear canvas & update to fill window
-    canvas.width = canvasLogicalDimensions.width * dpr;
-    canvas.height = canvasLogicalDimensions.height * dpr;
+    canvas.width = viewportDimensions.width * dpr;
+    canvas.height = viewportDimensions.height * dpr;
 
-    canvas.style.width = `${canvasLogicalDimensions.width}px`;
-    canvas.style.height = `${canvasLogicalDimensions.height}px`;
+    canvas.style.width = `${viewportDimensions.width}px`;
+    canvas.style.height = `${viewportDimensions.height}px`;
 
     // Scale all drawing operations by the dpr, so you
     // don't have to worry about the difference.
@@ -290,7 +303,7 @@ function MidiTrackEditor({events, setEvents, width, height}) {
           QUARTER_NOTE_WIDTH,
         y: TIMELINE_ROW_HEIGHT,
       });
-      size.x = canvasLogicalDimensions.width;
+      size.x = viewportDimensions.width;
       const rect = new Rect({
         position,
         size,
@@ -342,7 +355,7 @@ function MidiTrackEditor({events, setEvents, width, height}) {
     events,
     viewport,
     selection,
-    canvasLogicalDimensions,
+    viewportDimensions,
     extents.start,
     extents.size,
     extents.minMidi,
@@ -364,13 +377,27 @@ function MidiTrackEditor({events, setEvents, width, height}) {
           cursor: mode === 'pan' ? 'grab' : null,
         }}
       />
-      <Controls
-        mode={mode}
-        onModeChange={setMode}
-        viewportState={viewportState}
-        onViewportStateChange={setViewportState}
-        canvasLogicalDimensions={canvasLogicalDimensions}
-      />
+      <div
+        style={{
+          position: 'absolute',
+          width: '50vw',
+          top: 0,
+          right: 0,
+          textAlign: 'right',
+        }}
+      >
+        <Controls
+          mode={mode}
+          onModeChange={setMode}
+          viewportState={viewportState}
+          onViewportStateChange={(vs) => {
+            console.log(vs);
+            setViewportState(vs);
+          }}
+          getDefaultViewportState={getViewportStateZoomedToExtents}
+          viewportDimensions={viewportDimensions}
+        />
+      </div>
     </div>
   );
 }
