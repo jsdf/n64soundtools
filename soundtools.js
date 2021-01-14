@@ -940,7 +940,14 @@ class ALBankFileWriter {
         const data = {
           ...obj.value,
           pad: 0, // required padding field
-          percussion: obj.value.percussionDefault,
+          percussion: obj.value.percussionDefault
+            ? this.dependOnReferencedObject({
+                reference: obj.value.percussionDefault,
+                type: 'instrument',
+                field: 'percussionDefault',
+                source: obj,
+              })
+            : 0,
           flags: FLAGS_REF_AS_OFFSET,
           instCount: Array.from(obj.value.instruments).length,
           instArray: Array.from(obj.value.instruments.entries())
