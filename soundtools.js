@@ -128,11 +128,11 @@ const ALSoundStruct = new BufferStruct({
 });
 
 // typedef struct {
-//         s32     attackTime;
-//         s32     decayTime;
-//         s32     releaseTime;
-//         s16     attackVolume;
-//         s16     decayVolume;
+//     s32 attackTime;
+//     s32 decayTime;
+//     s32 releaseTime;
+//     u8  attackVolume;
+//     u8  decayVolume;
 // } ALEnvelope;
 
 const ALEnvelopeStruct = new BufferStruct({
@@ -142,8 +142,8 @@ const ALEnvelopeStruct = new BufferStruct({
     attackTime: {type: 'int', size: 4},
     decayTime: {type: 'int', size: 4},
     releaseTime: {type: 'int', size: 4},
-    attackVolume: {type: 'int', size: 2},
-    decayVolume: {type: 'int', size: 2},
+    attackVolume: {type: 'int', size: 1},
+    decayVolume: {type: 'int', size: 1},
   },
 });
 
@@ -444,7 +444,18 @@ function parseCtl(ctlBuffer, startOffset) {
         updateLastOffset(ALInstrumentStruct);
       }
     });
+
+    if (bank.percussion) {
+      if (!bankFile.instruments[bank.percussion]) {
+        bankFile.instruments[bank.percussion] = ALInstrumentStruct.parse(
+          ctlBuffer,
+          startOffset + bank.percussion
+        );
+        updateLastOffset(ALInstrumentStruct);
+      }
+    }
   });
+
   DEBUG &&
     console.log(
       'bankFile.instruments',
@@ -552,7 +563,11 @@ async function bankToSource(
   generalMidi
 ) {
   const outFilePrefix = outPath.replace(/\.inst$/, '');
-  const outSamplesDir = outFilePrefix + '_samples';
+  const outFileName = path.basename(outFilePrefix);
+  const outFileDir = path.dirname(outPath);
+  const outSamplesDirName = outFileName + '_samples';
+  const outSamplesDir = path.join(outFileDir, outSamplesDirName);
+
   await fs.promises.mkdir(outSamplesDir, {recursive: true});
 
   const bankFile = parseCtl(ctlBuffer, ctlStartOffset);
@@ -631,7 +646,7 @@ async function bankToSource(
 
   function makeWavetableFilePath(wavetable) {
     return path.join(
-      outSamplesDir,
+      outSamplesDirName,
       wavetable.base + (wavetable.type == AL_ADPCM_WAVE ? '.aifc' : '.aiff')
     );
   }
@@ -720,7 +735,7 @@ async function bankToSource(
       });
 
       return fs.promises.writeFile(
-        makeWavetableFilePath(wavetable),
+        path.join(outFileDir, makeWavetableFilePath(wavetable)),
         aiffFileContents
       );
     })
