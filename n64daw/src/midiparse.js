@@ -9,10 +9,16 @@ function getEventType(status) {
       return 'noteOn';
     case 0x8:
       return 'noteOff';
+    default:
+      return 'other';
   }
-  return 'other';
+}
+
+function getChannel(status) {
+  return status & 0xf;
 }
 
 module.exports = {
   getEventType,
+  getChannel,
 };

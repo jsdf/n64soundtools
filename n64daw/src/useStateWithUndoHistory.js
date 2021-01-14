@@ -1,4 +1,4 @@
-import React, {useState, useRef} from 'react';
+import {useState, useRef, useEffect} from 'react';
 
 function last(arr) {
   return arr[arr.length - 1];
@@ -11,7 +11,9 @@ class StateHistory {
   _forwardHistory = [];
 
   // setState function to call when state updates
-  stateSubscriber = () => {};
+  stateSubscriber = () => {
+    throw new Error('set state before initialized');
+  };
 
   // to decide whether a state commit should replace an optimistic update,
   // track whether the last update was optimistic or commit
@@ -152,7 +154,9 @@ export default function useStateWithUndoHistory(initializer, opts) {
   const [state, setState] = useState(
     historyRef.current.getCurrentStateVersion()
   );
-  historyRef.current.stateSubscriber = setState;
+  useEffect(() => {
+    historyRef.current.stateSubscriber = setState;
+  }, [setState]);
 
   return [
     state.state,

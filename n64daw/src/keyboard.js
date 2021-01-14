@@ -17,7 +17,7 @@ const scaleNotes = TonalScale.get('C major').notes; // =>["C", "D", "E", "F", "G
 const minOctave = 0;
 const maxOctave = 7;
 
-export function useKeyboard(instrument) {
+export function useKeyboard({instrument, channel}) {
   const [octave, setOctave] = useState(2);
 
   const qwertyToNoteName = useCallback(
@@ -36,14 +36,13 @@ export function useKeyboard(instrument) {
   );
 
   useEffect(() => {
-    console.log(module.id, 'useEffect');
     const qwertyHandlers = {
       onKeyDown(e) {
         if (e.repeat) return;
         const noteName = qwertyToNoteName(e.key);
         if (noteName != null) {
           instrument.send(
-            [0x90, TonalMidi.toMidi(noteName), 64],
+            [(0x9 << 4) + channel, TonalMidi.toMidi(noteName), 64],
             performance.now()
           );
         }
@@ -62,7 +61,7 @@ export function useKeyboard(instrument) {
         const noteName = qwertyToNoteName(e.key);
         if (noteName != null) {
           instrument.send(
-            [0x80, TonalMidi.toMidi(noteName), 0],
+            [(0x8 << 4) + channel, TonalMidi.toMidi(noteName), 0],
             performance.now()
           );
         }
@@ -75,11 +74,18 @@ export function useKeyboard(instrument) {
       document.removeEventListener('keydown', qwertyHandlers.onKeyDown);
       document.removeEventListener('keyup', qwertyHandlers.onKeyUp);
     };
-  }, [instrument, qwertyToNoteName]);
+  }, [instrument, qwertyToNoteName, channel]);
 }
 
 export function Keyboard({instrument}) {
-  useKeyboard(instrument);
+  const [channel, setChannel] = useState(0);
+  useKeyboard({instrument, channel});
 
-  return null;
+  return (
+    <input
+      type="text"
+      value={channel}
+      onChange={(e) => setChannel(parseInt(e.currentTarget.value))}
+    />
+  );
 }

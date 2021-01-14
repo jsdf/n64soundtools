@@ -46,7 +46,7 @@ function renderMIDIStream(midi, channelFilter, generalMIDI) {
   const events = [];
   midi.tracks.forEach((track) => {
     if (channelFilter && !channelFilter.has(track.channel)) return;
-    if (!generalMIDI || track.channel !== 9) {
+    if (!(generalMIDI && track.channel === 9)) {
       events.push({
         time: Math.floor(Math.random() * 1000),
         type: 'programChange',

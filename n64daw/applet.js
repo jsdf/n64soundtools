@@ -155,11 +155,23 @@ class Applet {
 
             const contents = await fs.promises.readFile(sourceFile, 'utf8');
 
-            const parsed = parseWithNiceErrors(contents, sourceFile);
+            const defs = parseWithNiceErrors(contents, sourceFile);
 
-            return parsed;
+            defs.forEach((def) => {
+              if (def.type === 'bank') {
+                def.value.instruments = Object.fromEntries(
+                  def.value.instruments
+                );
+              }
+            });
+
+            const sourceFileDir = path.dirname(path.resolve(sourceFile));
+
+            return {defs, sourceFileDir};
           })
         );
+        break;
+      default:
         break;
     }
   }
@@ -268,14 +280,14 @@ class Applet {
   }
 
   registerMiddleware(app) {
-    app.get('/sample/*', (req, res) => {
+    app.get('/sample/*', async (req, res) => {
       if (req.params[0]) {
         const file = req.params[0];
-        fs.promises.readFile(path.resolve(file)).then((filedata) => {
-          res.setHeader('content-type', 'audio/wave');
-          res.set('Cache-control', 'public, max-age=300');
-          res.send(audioConvert.aiffToWave(filedata));
-        });
+        const filedata = await fs.promises.readFile(path.resolve(file));
+
+        res.setHeader('content-type', 'audio/wave');
+        res.set('Cache-control', 'public, max-age=300');
+        res.send(audioConvert.aiffToWave(filedata));
       }
     });
   }

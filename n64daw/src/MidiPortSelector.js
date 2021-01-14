@@ -20,11 +20,12 @@ export default function MidiPortSelector({
       const midiAccess = midiAccessRef.current;
       if (!midiAccess) return;
       const midiPorts = midiAccess[direction === 'in' ? 'inputs' : 'outputs'];
-      const newPorts = [...extraPorts, ...midiPorts.values()];
+      const newPorts = [...(extraPorts || []), ...midiPorts.values()];
       setPorts(newPorts);
       if (port) {
+        // if current port is invalid, choose first
         if (!newPorts.find((newPort) => newPort.id === port.id)) {
-          onChange(null);
+          onChange(newPorts[0]);
         }
       } else {
         if (newPorts.length) {
@@ -36,6 +37,10 @@ export default function MidiPortSelector({
       onStateChangeRef.current = null;
     };
   }, [direction, extraPorts, port, port?.id, onChange]);
+
+  useEffect(() => {
+    if (onStateChangeRef.current) onStateChangeRef.current();
+  }, [extraPorts]);
 
   useEffect(() => {
     function handleStateChange() {
@@ -66,7 +71,6 @@ export default function MidiPortSelector({
       options={[...ports.values()].map((v) => ({value: v.id, label: v.name}))}
       value={port?.id}
       onChange={(id) => {
-        debugger;
         onChange(ports.find((port) => port.id === id));
       }}
     />

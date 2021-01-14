@@ -22,7 +22,9 @@ import Player from './player';
 import RequestMap from './RequestMap';
 import * as webAudio from './webAudio';
 import {Keyboard} from './keyboard';
-import useRefOnce from './flatland/useRefOnce';
+import {makeInstrumentConfigs} from './InstrumentBank';
+import {IoPlay, IoStop} from 'react-icons/io5';
+import * as midiparse from './midiparse';
 
 var searchParams = new URLSearchParams(window.location.search);
 
@@ -33,6 +35,10 @@ const socketPort = parseInt(
 if (!socketPort) {
   window.alert(`'port' url query param required`);
   throw new Error(`'port' url query param required`);
+}
+
+function callUpdater(update, prevState) {
+  return typeof update == 'function' ? update(prevState) : update;
 }
 
 function useKeyboardCommands(commands) {
@@ -70,29 +76,29 @@ function initMidiFromData(midiData) {
     track.notes.forEach((note, index) => {
       note.id = index;
     });
+    if (track.instrument.family === 'drums') {
+      track.instrument.number = 128;
+    }
   });
   return parsed;
 }
 
-function loadMidiStateFromLocalStorage() {
+function loadProjectFromLocalStorage() {
   try {
-    return JSON.parse(window.localStorage.getItem('midistate'));
+    return JSON.parse(window.localStorage.getItem('project'));
   } catch (err) {
     console.error(err);
     return null;
   }
 }
 
-const storeMidiStateToLocalStorage = throttleTrailing((midiState) => {
+const storeProjectToLocalStorage = throttleTrailing((project) => {
   try {
-    window.localStorage.setItem('midistate', JSON.stringify(midiState));
+    window.localStorage.setItem('project', JSON.stringify(project));
   } catch (err) {
-    console.error('failed to store midiState', midiState);
+    console.error('failed to store project', project);
   }
 }, 500);
-
-  );
-}
 
 function Log({logItems}) {
   const logEl = useRef(null);
@@ -116,8 +122,12 @@ const styles = {
   },
 };
 
+function allChannelsEnabled(midiState) {
+  return new Set(midiState.tracks.map((t) => t.channel));
+}
+
 function App() {
-  const [state, setState] = useState(null);
+  const [serverState, setServerState] = useState(null);
   const [clientErrors, setClientErrors] = useState([]);
   const [logItems, setLogItems] = useState([]);
   const [selectedTrackIndex, setSelectedTrackIndex] = useState(0);
@@ -128,7 +138,7 @@ function App() {
     const socket = io.connect(`http://localhost:${socketPort}`);
     socket.on('state', (newState) => {
       console.log(newState);
-      setState(newState);
+      setServerState(newState);
     });
     socket.on('log', (newLogItem) => {
       setLogItems((logItems) => logItems.concat(newLogItem));
@@ -211,65 +221,140 @@ function App() {
   }, []);
 
   const [
-    midiState,
-    setMidiStateWithUndo,
-    midiStateHistory,
-  ] = useStateWithUndoHistory(loadMidiStateFromLocalStorage, {
+    projectState,
+    setProjectStateWithUndo,
+    projectStateHistory,
+  ] = useStateWithUndoHistory(loadProjectFromLocalStorage, {
     // prevent undoing back to null state
     validateHistoryChange: (state) => state != null,
   });
 
-  const [instrumentBank, setInstrumentBank] = useState(null);
+  // const [projectState, setProjectState] = useState(loadProjectFromLocalStorage);
+  // const projectStateHistory = useMemo(() => {}, []);
+  // const setProjectStateWithUndo = useCallback((arg) => setProjectState(arg), [
+  //   setProjectState,
+  // ]);
+
+  const midiState = projectState?.midiState;
+  const instrumentBankDefs = projectState?.instrumentBankDefs;
+
+  const setMidiStateWithUndo = useCallback(
+    (update, opts) => {
+      setProjectStateWithUndo(
+        (s) => ({...s, midiState: callUpdater(update, s?.midiState)}),
+        opts
+      );
+    },
+    [setProjectStateWithUndo]
+  );
+  const setInstrumentBankDefs = useCallback(
+    (update) => {
+      setProjectStateWithUndo(
+        (s) => ({
+          ...s,
+          instrumentBankDefs: callUpdater(update, s?.instrumentBankDefs),
+        }),
+        {
+          updateType: 'commit',
+        }
+      );
+    },
+    [setProjectStateWithUndo]
+  );
 
   useEffect(() => {
-    storeMidiStateToLocalStorage(midiState);
-  }, [midiState]);
+    storeProjectToLocalStorage(projectState);
+  }, [projectState]);
 
   const [outPort, setOutPort] = useState(null);
   const playerAPIRef = useRef(null);
-
-  const webAudioPlayerRef = useRefOnce(() => {
-    webAudio.makeSampler();
-    return webAudio.makePlayer();
+  const [playbackState, setPlaybackState] = useState({
+    state: 'stopped',
+    stoppedAt: 0,
   });
-  const extraMidiPorts = useMemo(() => [webAudioPlayerRef.current.midiOut], [
-    webAudioPlayerRef,
-  ]);
+
+  const webAudioPlayerRef = useRef(null);
+  const [extraMidiPorts, setExtraMidiPorts] = useState([]);
+
+  useEffect(() => {
+    if (webAudioPlayerRef.current) {
+      webAudioPlayerRef.current.dispose();
+      webAudioPlayerRef.current = null;
+    }
+    webAudioPlayerRef.current = webAudio.makePlayer(
+      instrumentBankDefs ? makeInstrumentConfigs(instrumentBankDefs) : null
+    );
+    window.webAudioPlayer = webAudioPlayerRef.current;
+    setExtraMidiPorts([webAudioPlayerRef.current.midiOut]);
+  }, [instrumentBankDefs]);
+
+  const [channelsEnabled, setChannelsEnabled] = useState(
+    midiState ? allChannelsEnabled(midiState) : new Set()
+  );
 
   useEffect(() => {
     if (!midiState) return;
-    if (!outPort) return;
-    const player = new Player(midiState);
+    const player = new Player(midiState, null, /*generalMIDI*/ true);
 
-    function tick() {
-      setTimeout(() => {
-        const events = player.getPendingEvents(16);
-
-        events.forEach((event) => {
-          const midiMessage = Array.from(event.data);
-          outPort.send(midiMessage, player.startTime + event.time);
-        });
-        if (player.playing) {
-          tick();
-        }
-      }, 1);
-    }
+    const cleanup = player.onStateChange((state) => {
+      console.log('player statechange', state);
+      setPlaybackState(state);
+    });
 
     const playerAPI = {
+      player,
       play: () => {
         console.log('playing');
-        tick();
         player.play();
       },
-      stop: () => player.stop(),
+      stop: () => {
+        player.stop();
+      },
+      getPlayOffset() {
+        return player.getPlayOffset();
+      },
+      setPlayOffset(offset) {
+        player.setPlayOffset(offset);
+      },
     };
 
     playerAPIRef.current = playerAPI;
+    window.playerAPI = playerAPI;
 
     return () => {
       playerAPI.stop();
+      cleanup();
     };
-  }, [midiState, outPort]);
+  }, [midiState]);
+
+  useEffect(() => {
+    if (!playerAPIRef.current) return;
+    const player = playerAPIRef.current.player;
+    let timeoutID;
+    function playerTick() {
+      timeoutID = setTimeout(() => {
+        const events = player.getPendingEvents(16);
+
+        events
+          .filter((event) => {
+            const channel = midiparse.getChannel(event.data[0]);
+            return channelsEnabled.has(channel);
+          })
+          .forEach((event) => {
+            const midiMessage = Array.from(event.data);
+            outPort.send(midiMessage, player.startTime + event.time);
+          });
+        if (player.playing) {
+          playerTick();
+        }
+      }, 1);
+    }
+    if (playbackState.state === 'playing') {
+      playerTick();
+    }
+
+    return () => clearTimeout(timeoutID);
+  }, [playbackState, channelsEnabled, outPort]);
 
   const pickMidiFile = useCallback(() => {
     apiRef.current
@@ -280,9 +365,12 @@ function App() {
       .then((result) => {
         const midiFile = result.files[0];
         if (midiFile) {
-          setMidiStateWithUndo(initMidiFromData(midiFile.contents), {
+          const midiState = initMidiFromData(midiFile.contents);
+          setMidiStateWithUndo(midiState, {
             updateType: 'commit',
           });
+
+          setChannelsEnabled(allChannelsEnabled(midiState));
         } else {
           console.warn('no file was selected');
         }
@@ -290,12 +378,10 @@ function App() {
   }, [setMidiStateWithUndo]);
 
   const pickInstrumentFile = useCallback(() => {
-    apiRef.current
-      .sendRequest('showInstrumentDialog')
-      .then((instrumentBank) => {
-        console.log(instrumentBank);
-      });
-  }, [setMidiStateWithUndo]);
+    apiRef.current.sendRequest('showInstrumentDialog').then((bankDefs) => {
+      setInstrumentBankDefs(bankDefs);
+    });
+  }, [setInstrumentBankDefs]);
 
   const setEventsForTrack = useCallback(
     (updater, thisTrackIdx, updateType) => {
@@ -323,10 +409,23 @@ function App() {
     useMemo(
       () => [
         {
+          key: ' ',
+          exec() {
+            const playerAPI = playerAPIRef.current;
+            if (playerAPI) {
+              if (playerAPI.player.playing) {
+                playerAPI.stop();
+              } else {
+                playerAPI.play();
+              }
+            }
+          },
+        },
+        {
           key: 'z',
           cmdCtrl: true,
           exec() {
-            midiStateHistory.undo();
+            projectStateHistory.undo();
           },
         },
         {
@@ -334,22 +433,22 @@ function App() {
           cmdCtrl: true,
           shift: true,
           exec() {
-            midiStateHistory.redo();
+            projectStateHistory.redo();
           },
         },
         {
           key: 'y',
           cmdCtrl: true,
           exec() {
-            midiStateHistory.redo();
+            projectStateHistory.redo();
           },
         },
       ],
-      [midiStateHistory]
+      [projectStateHistory]
     )
   );
 
-  if (!state) {
+  if (!serverState) {
     return <div style={{margin: 100}}>awaiting initial state...</div>;
   }
   const selectedTrack = midiState ? midiState.tracks[selectedTrackIndex] : null;
@@ -357,9 +456,11 @@ function App() {
   return (
     <div style={{display: 'flex', flexDirection: 'column', height: '100vh'}}>
       <div style={{backgroundColor: 'red', color: 'white', flex: 0}}>
-        {clientErrors.concat(state.serverErrors).map(({message, error}, i) => (
-          <div key={i}>{message}</div>
-        ))}
+        {clientErrors
+          .concat(serverState.serverErrors)
+          .map(({message, error}, i) => (
+            <div key={i}>{message}</div>
+          ))}
       </div>
       <div style={{flex: 0, display: 'flex', flexDirection: 'row'}}>
         <div style={{...styles.control}}>
@@ -375,26 +476,38 @@ function App() {
           <button onClick={pickInstrumentFile}>Open instrument file...</button>
         </div>
         <div style={{...styles.control}}>
-          <Keyboard instrument={outPort} />
+          {outPort && <Keyboard instrument={outPort} />}
+        </div>
+        <div style={{...styles.control}}>
           <button
             onClick={() => {
-              // webAudioPlayerRef.current.play(midiState).catch((err) => {
-              //   console.error(err);
-              //   debugger;
-              // });
               playerAPIRef.current.play();
             }}
           >
-            &#9658;
+            <IoPlay />
           </button>
           <button
             onClick={() => {
               playerAPIRef.current.stop();
-              // webAudioPlayerRef.current.stop();
             }}
           >
-            &#9632;
+            <IoStop />
           </button>
+        </div>
+        <div style={{...styles.control}}>
+          <label>
+            all channels{' '}
+            <input
+              type="checkbox"
+              onChange={(e) => {
+                if (e.currentTarget.checked) {
+                  setChannelsEnabled(allChannelsEnabled(midiState));
+                } else {
+                  setChannelsEnabled(new Set());
+                }
+              }}
+            />
+          </label>
         </div>
       </div>
       <div style={{flex: 1, overflow: 'hidden'}}>
@@ -428,6 +541,10 @@ function App() {
                               tracks={midiState.tracks}
                               selectedTrackIndex={selectedTrackIndex}
                               setSelectedTrackIndex={setSelectedTrackIndex}
+                              channelsEnabled={channelsEnabled}
+                              setChannelsEnabled={setChannelsEnabled}
+                              playbackState={playbackState}
+                              playerAPI={playerAPIRef.current}
                             />
                           </div>
                         }
@@ -447,6 +564,7 @@ function App() {
                                   <MidiTrackEditor
                                     key={`${midiState.fileID}_${selectedTrackIndex}`}
                                     {...dimensions}
+                                    playbackState={playbackState}
                                     events={selectedTrack.notes}
                                     setEvents={(updater, updateType) =>
                                       setEventsForTrack(
@@ -481,7 +599,7 @@ function App() {
             <Log logItems={logItems} />
           </Details>
           <Details summary="State">
-            <pre>{JSON.stringify(state, null, 2)}</pre>
+            <pre>{JSON.stringify(serverState, null, 2)}</pre>
           </Details>
         </div>
       )}
