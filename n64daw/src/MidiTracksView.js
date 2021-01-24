@@ -1,13 +1,12 @@
 import React from 'react';
-import {useRef, useState, useEffect, useCallback, useMemo} from 'react';
+import {useEffect, useMemo} from 'react';
 
 import {useCanvasContext2d, drawRect} from './flatland/canvasUtils';
 import {getDPR} from './flatland/windowUtils';
 import {getExtents} from './miditrack';
 import {scaleLinear, scaleDiscreteQuantized} from './flatland/utils';
 import Rect from './flatland/Rect';
-import {BehaviorController, useBehaviors, Behavior} from './flatland/behavior';
-import {getMouseEventPos} from './flatland/mouseUtils';
+import {PlayheadBar, usePlayhead} from './playhead';
 
 const styles = {
   selected: {
@@ -23,47 +22,12 @@ const MINIMAP_HEIGHT = 100;
 const ONE_SECOND_WIDTH = 4;
 const TRACK_HEADER_WIDTH = 100;
 
-export class ScrubBehavior extends Behavior {
-  isMouseDown = false;
-  onmousedown = (e) => {
-    this.isMouseDown = true;
-    this.onScrub(e);
-  };
-
-  onmouseup = (e) => {
-    this.isMouseDown = false;
-    this.controller.releaseLock('drag', this);
-  };
-
-  onScrub(e) {
-    if (this.isMouseDown && !this.hasLock('drag')) {
-      this.acquireLock('drag');
-    }
-    if (this.hasLock('drag')) {
-      if (this.props.onScrub) {
-        this.props.onScrub(getMouseEventPos(e, this.canvas));
-      }
-    }
-  }
-
-  onmousemove = (e) => {
-    this.onScrub(e);
-  };
-
-  onEnabled() {
-    this.isMouseDown = false;
-  }
-
-  getEventHandlers() {
-    return {
-      mousemove: this.onmousemove,
-      mouseup: this.onmouseup,
-      mousedown: this.onmousedown,
-    };
-  }
-}
-
-const Minimap = React.memo(function Minimap({events, selected, quantizerX}) {
+const Minimap = React.memo(function Minimap({
+  events,
+  selected,
+  quantizerX,
+  allTracksExtents,
+}) {
   const {canvasRef, ctx, canvas} = useCanvasContext2d();
 
   const extents = useMemo(() => getExtents(events), [events]);
@@ -88,10 +52,10 @@ const Minimap = React.memo(function Minimap({events, selected, quantizerX}) {
 
   const canvasLogicalDimensions = useMemo(
     () => ({
-      width: quantizerX.to('pixels', extents.end),
+      width: quantizerX.to('pixels', allTracksExtents.end),
       height: MINIMAP_HEIGHT,
     }),
-    [extents.end, quantizerX]
+    [allTracksExtents.end, quantizerX]
   );
 
   // rendering
@@ -127,7 +91,18 @@ const Minimap = React.memo(function Minimap({events, selected, quantizerX}) {
         fillStyle: '#ccc',
       });
     });
-  }, [ctx, events, canvasLogicalDimensions, extents.start, extents.size, extents.minMidi, extents.maxMidi, quantizerX, quantizerY, selected]);
+  }, [
+    ctx,
+    events,
+    canvasLogicalDimensions,
+    extents.start,
+    extents.size,
+    extents.minMidi,
+    extents.maxMidi,
+    quantizerX,
+    quantizerY,
+    selected,
+  ]);
   return (
     <canvas
       ref={canvasRef}
@@ -139,6 +114,18 @@ const Minimap = React.memo(function Minimap({events, selected, quantizerX}) {
   );
 });
 
+// map from pixels (unzoomed) to seconds
+const quantizerX = scaleLinear(
+  [0, ONE_SECOND_WIDTH], // domain
+  [0, 1], // range
+  {
+    alias: {
+      domain: 'pixels',
+      range: 'seconds',
+    },
+  }
+);
+
 export default function MidiTracksView({
   tracks,
   selectedTrackIndex,
@@ -148,168 +135,113 @@ export default function MidiTracksView({
   playbackState,
   playerAPI,
 }) {
-  // map from pixels (unzoomed) to seconds
-  const quantizerX = useMemo(
-    () =>
-      scaleLinear(
-        [0, ONE_SECOND_WIDTH], // domain
-        [0, 1], // range
-        {
-          alias: {
-            domain: 'pixels',
-            range: 'seconds',
-          },
-        }
-      ),
-    []
-  );
+  const playheadRef = usePlayhead({playbackState, playerAPI, quantizerX});
+  const allTracksExtents = useMemo(() => {
+    return tracks.reduce((allExtents, track) => {
+      const extents = getExtents(track.notes);
+      if (!allExtents) return extents;
 
-  const playheadRef = useRef(null);
-
-  const updatePlayheadPos = useCallback(() => {
-    if (!playerAPI) return;
-    const el = playheadRef.current;
-    if (el) {
-      const offset = playerAPI.getPlayOffset();
-      el.style.transform = `translateX(${quantizerX.to(
-        'pixels',
-        offset / 1000
-      )}px)`;
-    }
-  }, [playerAPI, quantizerX]);
-
-  const onScrub = useCallback(
-    (mousePos) => {
-      if (!playerAPI) return;
-      if (mousePos.x < TRACK_HEADER_WIDTH) return;
-      const offset = Math.max(
-        0,
-        quantizerX.to('seconds', mousePos.x - TRACK_HEADER_WIDTH) * 1000
-      );
-      playerAPI.setPlayOffset(offset);
-    },
-    [playerAPI, quantizerX]
-  );
-
-  const [viewportEl, setViewportEl] = useState(null);
-
-  useBehaviors(
-    () => {
-      const controller = new BehaviorController();
-      controller.addBehavior('scrub', ScrubBehavior, 1);
-
-      return controller;
-    },
-    {
-      canvas: viewportEl,
-      props: {
-        scrub: {
-          onScrub,
-        },
-      },
-      enabled: {
-        scrub: true,
-      },
-    }
-  );
-
-  useEffect(() => {
-    if (!playerAPI) return;
-    if (playbackState.state === 'playing') {
-      let animFrame;
-      function tick() {
-        animFrame = requestAnimationFrame(() => {
-          updatePlayheadPos();
-          tick();
-        });
-      }
-      tick();
-
-      return () => {
-        cancelAnimationFrame(animFrame);
-      };
-    } else {
-      updatePlayheadPos();
-    }
-  }, [updatePlayheadPos, playbackState, playerAPI, quantizerX]);
+      allExtents.start = Math.min(allExtents.start, extents.start);
+      allExtents.end = Math.max(allExtents.end, extents.end);
+      allExtents.size = Math.max(allExtents.size, extents.size);
+      allExtents.minMidi = Math.min(allExtents.minMidi, extents.minMidi);
+      allExtents.maxMidi = Math.max(allExtents.maxMidi, extents.maxMidi);
+      return allExtents;
+    }, null);
+  }, [tracks]);
+  const tracksBodyWidth = quantizerX.to('pixels', allTracksExtents.end);
 
   return (
-    <div
-      ref={setViewportEl}
-      style={{
-        position: 'relative',
-        userSelect: 'none',
-      }}
-    >
+    <div>
+      <div style={{marginLeft: TRACK_HEADER_WIDTH}}>
+        <PlayheadBar
+          {...{
+            playbackState,
+            playerAPI,
+            quantizerX,
+            width: tracksBodyWidth,
+            minTime: 0,
+            maxTime: allTracksExtents.end,
+          }}
+        />
+      </div>
       <div
-        ref={playheadRef}
         style={{
-          position: 'absolute',
-          top: 0,
-          bottom: 0,
-          left: TRACK_HEADER_WIDTH,
-          height: '100%',
-          width: 1,
-          backgroundColor: 'red',
-          pointerEvents: 'none',
+          position: 'relative',
+          userSelect: 'none',
         }}
-      />
-      {tracks.map((track, i) => {
-        const selected = selectedTrackIndex === i;
-        return (
-          <div
-            key={i}
-            onClick={() => setSelectedTrackIndex(i)}
-            style={{
-              display: 'flex',
-              // margin: '2px 0',
-              borderBottom: 'solid 1px #333',
-              ...(selected ? styles.selected : styles.deselected),
-            }}
-          >
+      >
+        <div
+          ref={playheadRef}
+          style={{
+            position: 'absolute',
+            top: 0,
+            bottom: 0,
+            left: TRACK_HEADER_WIDTH,
+            height: '100%',
+            width: 1,
+            backgroundColor: 'red',
+            pointerEvents: 'none',
+          }}
+        />
+        {tracks.map((track, i) => {
+          const selected = selectedTrackIndex === i;
+          return (
             <div
+              key={i}
+              onClick={() => setSelectedTrackIndex(i)}
               style={{
-                width: TRACK_HEADER_WIDTH,
-                flex: '0 0 100px',
-                padding: 8,
-                borderRight: 'solid 1px #333',
-              }}
-            >
-              <div>track {i}</div>
-              <div>
-                inst: {track.instrument.number}
-                <br />
-                <label>ch: {track.channel}</label>
-                <input
-                  type="checkbox"
-                  checked={channelsEnabled.has(track.channel)}
-                  onChange={(e) => {
-                    let updated = new Set(channelsEnabled);
-                    if (e.currentTarget.checked) {
-                      updated.add(track.channel);
-                    } else {
-                      updated.delete(track.channel);
-                    }
-                    setChannelsEnabled(updated);
-                  }}
-                />
-              </div>
-            </div>
-            <div
-              style={{
-                flex: '1 0 100%',
+                display: 'flex',
+                // margin: '2px 0',
+                borderBottom: 'solid 1px #333',
                 ...(selected ? styles.selected : styles.deselected),
               }}
             >
-              <Minimap
-                events={track.notes}
-                selected={selected}
-                quantizerX={quantizerX}
-              />
+              <div
+                style={{
+                  width: TRACK_HEADER_WIDTH,
+                  flex: '0 0 100px',
+                  padding: 8,
+                  borderRight: 'solid 1px #333',
+                }}
+              >
+                <div>track {i}</div>
+                <div>
+                  inst: {track.instrument.number}
+                  <br />
+                  <label>ch: {track.channel}</label>
+                  <input
+                    type="checkbox"
+                    checked={channelsEnabled.has(track.channel)}
+                    onChange={(e) => {
+                      let updated = new Set(channelsEnabled);
+                      if (e.currentTarget.checked) {
+                        updated.add(track.channel);
+                      } else {
+                        updated.delete(track.channel);
+                      }
+                      setChannelsEnabled(updated);
+                    }}
+                  />
+                </div>
+              </div>
+              <div
+                style={{
+                  ...(selected ? styles.selected : styles.deselected),
+                  width: tracksBodyWidth,
+                }}
+              >
+                <Minimap
+                  events={track.notes}
+                  selected={selected}
+                  quantizerX={quantizerX}
+                  allTracksExtents={allTracksExtents}
+                />
+              </div>
             </div>
-          </div>
-        );
-      })}
+          );
+        })}
+      </div>
     </div>
   );
 }

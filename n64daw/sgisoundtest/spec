@@ -38,7 +38,7 @@ beginseg
 	// include "wave.ctl"
 	// include "$(ROOT)/usr/lib/PR/soundbanks/GenMidiBank.ctl"
 	// include "$(ROOT)/usr/lib/PR/soundbanks/GenMidiRaw.ctl"
-	include "../../genmidi.ctl"
+	include "../../test/genmidi.ctl"
 endseg
 
 beginseg
@@ -47,7 +47,7 @@ beginseg
 	// include "wave.tbl"
 	// include "$(ROOT)/usr/lib/PR/soundbanks/GenMidiBank.tbl"
 	// include "$(ROOT)/usr/lib/PR/soundbanks/GenMidiRaw.tbl"
-	include "../../genmidi.tbl"
+	include "../../test/genmidi.tbl"
 endseg
 
 beginseg
