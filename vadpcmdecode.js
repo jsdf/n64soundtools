@@ -18,6 +18,7 @@ const args = arg({
 
 if (args['--help']) {
   console.log(`vadpcmdecode [--bin vadpcm_dec] files to decode`);
+  process.exit(0);
 }
 
 const vadpcmDecCmd = args['--cmd'] || 'vadpcm_dec';

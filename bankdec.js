@@ -19,7 +19,23 @@ const args = arg({
   // Aliases
   '-v': '--verbose',
   '-o': '--out',
+  '-h': '--help',
 });
+
+if (args['--help']) {
+  console.log(`bankdec [--out outputFilePrefix] inputFile
+
+  -h, --help: print this message
+  -o, --out: name prefix to use for output ctl, tbl and samples dir
+  --gm: treat sample bank as general midi
+  --ctlstart: when reading from rom, offset of ctl
+  --tblstart: when reading from rom, offset of tbl
+  --verbose: wordier errors
+
+  inputFile: input file to read, either ctl, tbl, or rom file
+`);
+  process.exit(0);
+}
 
 const sourceFile = args._[0];
 
