@@ -10,7 +10,7 @@
     "ic": "./ic.js",
     "sbc": "./sbc.js",
     "midicvt": "./midicvt.js",
-    "bankdec": "./bankdec.js",
+    "bankdec": "./bankdec.js"
   },
   "author": "James Friend <james@jsdf.co> (http://jsdf.co/)",
   "license": "ISC",

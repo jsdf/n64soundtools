@@ -331,14 +331,15 @@ const VADPCMLoopChunkStruct = new BufferStruct({
   },
 });
 
-const VADPCMApplChunkStruct = new BufferStruct({
-  name: 'VADPCMApplChunk',
+const VADPCMApplDataFieldStruct = new BufferStruct({
+  name: 'VADPCMApplDataField',
   endian: 'big',
   fields: {
     chunkName: {type: AIFF.PString},
     data: {
       type: 'bytes',
-      size: (fields, dataSize) => dataSize - (fields.chunkName.length + 1),
+      size: (fields, {applDataFieldSize}) =>
+        applDataFieldSize - (fields.chunkName.length + 1),
       // type: new BufferStructUnion({
       //   members: [VADPCMBookChunkStruct, VADPCMLoopChunkStruct],
       //   selectMember: (fields) => {
@@ -353,6 +354,81 @@ const VADPCMApplChunkStruct = new BufferStruct({
     },
   },
 });
+
+// handles the union case selection for the different vadpcm data types
+function parseVADPCMApplDataField(applChunk) {
+  if (applChunk.applicationSignature !== 'stoc') return null;
+  let parsed;
+  parsed = VADPCMApplDataFieldStruct.parse(applChunk.data, 0, {
+    applDataFieldSize: applChunk.data.length,
+  });
+
+  // skipping over pstring length field, peek at the pstring contents to check
+  // if it's one of our VADPCM data chunks
+  if (
+    !(
+      applChunk.data.length > 1 + 'VADPCM'.length &&
+      applChunk.data.slice(1, 1 + 'VADPCM'.length).toString('utf8') === 'VADPCM'
+    )
+  ) {
+    return null;
+  }
+  switch (parsed.chunkName) {
+    case VADPCM_CODE_NAME:
+      return {
+        chunkName: parsed.chunkName,
+        parsed: VADPCMBookChunkStruct.parse(parsed.data),
+      };
+    case VADPCM_LOOP_NAME:
+      return {
+        chunkName: parsed.chunkName,
+        parsed: VADPCMLoopChunkStruct.parse(parsed.data),
+      };
+    default:
+      return null;
+  }
+  return null;
+}
+
+// this just abstracts the logic to calculate applDataFieldSize
+function serializeVADPCMApplDataField({chunkName, data}) {
+  return VADPCMApplDataFieldStruct.serialize(
+    {
+      chunkName,
+      data,
+    },
+
+    // chunkName pstring size is chunkName.length + 1
+    {applDataFieldSize: chunkName.length + 1 + data.length}
+  );
+}
+
+function isInvalidAIFFFromN64SDK(aiffFile) {
+  const firstChunkId = aiffFile.slice(0, 4).toString('utf8');
+  const firstChunkSize = aiffFile.readInt32BE(4);
+
+  // the n64 sdk comes with some VADPCM samples which are invalid aiff files
+  // as the chunk size defined by their FORM chunk is bigger than the entire file.
+  // this is a gross hack to correct these particular files so we can parse them
+  if (
+    firstChunkId === 'FORM' &&
+    aiffFile.length < firstChunkSize + 8 &&
+    aiffFile.length > 0x26 + 4
+  ) {
+    const vadpmCreator = aiffFile.slice(0x26, 0x26 + 4).toString('utf8');
+    if (vadpmCreator === 'VAPC') {
+      // pretty sure this is one of those broken files
+      return true;
+    }
+  }
+  return false;
+}
+
+// super hacky
+// only use this on files which return true from isInvalidAIFFFromN64SDK()
+function fixInvalidAIFFFromN64SDK(aiffFile) {
+  aiffFile.writeInt32BE(aiffFile.length - 8, 4);
+}
 
 function instFileTextGen(defs) {
   return (
@@ -512,11 +588,23 @@ function parseCtl(ctlBuffer, startOffset) {
       const loopOffset = wavetable.waveInfo.loop;
 
       if (!bankFile.loops[loopOffset]) {
-        bankFile.loops[loopOffset] = ALADPCMloopStruct.parse(
-          ctlBuffer,
-          startOffset + loopOffset
-        );
-        updateLastOffset(ALADPCMloopStruct);
+        if (wavetable.type === AL_ADPCM_WAVE) {
+          bankFile.loops[loopOffset] = ALADPCMloopStruct.parse(
+            ctlBuffer,
+            startOffset + loopOffset
+          );
+          updateLastOffset(ALADPCMloopStruct);
+        } else if (wavetable.type === AL_RAW16_WAVE) {
+          bankFile.loops[loopOffset] = ALRawLoopStruct.parse(
+            ctlBuffer,
+            startOffset + loopOffset
+          );
+          updateLastOffset(ALRawLoopStruct);
+        } else {
+          throw new Error(
+            `unsupported wavetable compression type: ${wavetable.type}`
+          );
+        }
       }
     }
 
@@ -651,6 +739,13 @@ async function bankToSource(
     );
   }
 
+  // make a minimal effort to find a sample rate from the ctl
+  let defaultSampleRate = 44100;
+  const firstBank = Object.values(bankFile.banks)[0];
+  if (firstBank && firstBank.sampleRate !== 0) {
+    defaultSampleRate = firstBank.sampleRate;
+  }
+
   await fs.promises.writeFile(
     outFilePrefix + '.inst',
     instFileTextGen(
@@ -683,55 +778,108 @@ async function bankToSource(
         tblStartOffset + wavetable.base,
         tblStartOffset + wavetable.base + wavetable.len
       );
+      const chunks = [];
       let aifcFields = null;
       if (wavetable.type === AL_ADPCM_WAVE) {
-        const appl = [];
         // write VADPCM AIFC with codebook
         if (wavetable.waveInfo.book) {
           const book = bankFile.books[wavetable.waveInfo.book];
 
-          appl.push({
-            applicationSignature: 'stoc',
-            data: VADPCMApplChunkStruct.serialize({
-              chunkName: VADPCM_CODE_NAME,
-              data: VADPCMBookChunkStruct.serialize({
-                version: VADPCM_VERSION,
-                ...book,
+          chunks.push({
+            type: 'APPL',
+            value: {
+              applicationSignature: 'stoc',
+              data: serializeVADPCMApplDataField({
+                chunkName: VADPCM_CODE_NAME,
+                data: VADPCMBookChunkStruct.serialize({
+                  version: VADPCM_VERSION,
+                  ...book,
+                }),
               }),
-            }),
+            },
           });
+        } else {
+          throw new Error(
+            `AL_ADPCM_WAVE missing book for ${makeWavetableFilePath(wavetable)}`
+          );
         }
 
         if (wavetable.waveInfo.loop) {
           const loop = bankFile.loops[wavetable.waveInfo.loop];
+          if (!loop)
+            throw new Error('missing loop data for wavetable at ' + offset);
 
-          appl.push({
-            applicationSignature: 'stoc',
-            data: VADPCMApplChunkStruct.serialize({
-              chunkName: VADPCM_LOOP_NAME,
-              data: VADPCMLoopChunkStruct.serialize({
-                version: VADPCM_VERSION,
-                nloops: 1,
-                aloops: [loop],
+          chunks.push({
+            type: 'APPL',
+            value: {
+              applicationSignature: 'stoc',
+              data: serializeVADPCMApplDataField({
+                chunkName: VADPCM_LOOP_NAME,
+                data: VADPCMLoopChunkStruct.serialize({
+                  version: VADPCM_VERSION,
+                  nloops: 1,
+                  aloops: [loop],
+                }),
               }),
-            }),
+            },
           });
         }
 
         aifcFields = {
-          form: 'AIFC',
+          formType: 'AIFC',
           compressionType: 'VAPC',
           compressionName: 'VADPCM ~4-1',
-          appl,
         };
+      } else if (wavetable.type === AL_RAW16_WAVE) {
+        if (wavetable.waveInfo.loop) {
+          const loop = bankFile.loops[wavetable.waveInfo.loop];
+          if (!loop)
+            throw new Error('missing loop data for wavetable at ' + offset);
+          chunks.push({
+            type: 'MARK',
+            value: {
+              numMarkers: 2,
+              markers: [
+                {
+                  id: 1,
+                  position: loop.start,
+                  markerName: 'beg loop',
+                },
+                {
+                  id: 2,
+                  position: loop.end,
+                  markerName: 'end loop',
+                },
+              ],
+            },
+          });
+          chunks.push({
+            type: 'INST',
+            value: {
+              sustainLoop: {
+                playMode: 1,
+                beginLoop: 1,
+                endLoop: 2,
+              },
+              releaseLoop: {
+                playMode: 0,
+                beginLoop: 0,
+                endLoop: 0,
+              },
+            },
+          });
+        }
+      } else {
+        throw new Error(`unsupported compression type: ${wavetable.type}`);
       }
 
       const aiffFileContents = AIFF.serialize({
         soundData: soundWaveData,
         numChannels: 1,
         sampleSize: 16,
-        sampleRate: 44100,
+        sampleRate: defaultSampleRate,
         ...aifcFields,
+        chunks,
       });
 
       return fs.promises.writeFile(
@@ -745,19 +893,10 @@ async function bankToSource(
 function loadAIFFData(file) {
   const aiff = AIFF.parse(fs.readFileSync(file));
 
-  let ssndChunk;
-  aiff.formChunks.forEach((formChunk) => {
-    formChunk.localChunks.forEach((chunk) => {
-      if (chunk.ckID === 'SSND') {
-        ssndChunk = chunk;
-      }
-    });
-  });
-
-  if (!ssndChunk) {
+  if (!aiff.soundData) {
     throw new Error(`file ${file} does not contain SSND chunk`);
   }
-  return {soundData: ssndChunk.ssnd.soundData};
+  return aiff;
 }
 
 function getSymbolField(obj, fieldName) {
@@ -999,20 +1138,104 @@ class ALBankFileWriter {
           path.dirname(this.sourceFileLocation),
           obj.value.file
         );
-        const waveData = loadAIFFData(resolvedLocation).soundData;
-        const waveTblOffset = this.tbl.insertBuffer(waveData);
-        const data = {
-          base: waveTblOffset,
-          len: waveData.length,
-          type: AL_RAW16_WAVE, // TODO: support AL_ADPCM_WAVE
-          flags: FLAGS_REF_AS_OFFSET,
-          waveInfo: {
-            loop: 0,
-            // book: AL_ADPCM_WAVE only
-          },
-        };
+        const aiffData = loadAIFFData(resolvedLocation);
 
-        return ALWaveTableStruct.serialize(data);
+        const isVADPCM = aiffData.formType === 'AIFC';
+
+        const waveData = aiffData.soundData;
+        const waveTblOffset = this.tbl.insertBuffer(waveData);
+        let wavetableStructData;
+        if (isVADPCM) {
+          let loop = null;
+          let book = null;
+
+          aiffData.chunks.forEach((chunk) => {
+            if (chunk.type !== 'APPL') return;
+            let result = parseVADPCMApplDataField(chunk.value);
+            if (result) {
+              if (result.chunkName === VADPCM_CODE_NAME) {
+                const {version, ...rest} = result.parsed;
+                // the remaining properties of VADPCMBookChunkStruct are the
+                // fields expected by ALADPCMBook
+                book = rest;
+              }
+              if (result.chunkName === VADPCM_LOOP_NAME) {
+                // only nloops===1 supported
+                const vadpcmLoopChunkStruct = result.parsed;
+                if (vadpcmLoopChunkStruct.nloops === 1) {
+                  loop = vadpcmLoopChunkStruct.aloops[0];
+                } else if (vadpcmLoopChunkStruct.nloops > 1) {
+                  throw new Error(
+                    `VADPCMLoopChunkStruct nloops has invalid value: ${vadpcmLoopChunkStruct.nloops}`
+                  );
+                }
+              }
+            }
+          });
+
+          if (!book)
+            throw new Error(
+              `could not extract VADPCM codebook from ${obj.value.file}`
+            );
+
+          wavetableStructData = {
+            base: waveTblOffset,
+            len: waveData.length,
+            type: AL_ADPCM_WAVE,
+            flags: FLAGS_REF_AS_OFFSET,
+            waveInfo: {
+              loop: loop
+                ? this.ctl.insertBuffer(ALADPCMloopStruct.serialize(loop))
+                : 0,
+              book: this.ctl.insertBuffer(ALADPCMBookStruct.serialize(book)),
+            },
+          };
+        } else {
+          let loop = null;
+          // extract loop definition from AIFF chunks
+          const markersChunk = aiffData.chunks.find(
+            (chunk) => chunk.type == 'MARK'
+          );
+          const instrumentChunk = aiffData.chunks.find(
+            (chunk) => chunk.type == 'INST'
+          );
+
+          if (
+            markersChunk &&
+            instrumentChunk &&
+            instrumentChunk.value.sustainLoop.playMode ==
+              AIFF.LoopPlayMode.ForwardLooping
+          ) {
+            const loopStartMarkerID =
+              instrumentChunk.value.sustainLoop.beginLoop;
+            const loopEndMarkerID = instrumentChunk.value.sustainLoop.endLoop;
+
+            const loopStartMarker = markersChunk.value.markers.find(
+              (marker) => marker.id === loopStartMarkerID
+            );
+            const loopEndMarker = markersChunk.value.markers.find(
+              (marker) => marker.id === loopEndMarkerID
+            );
+            if (loopStartMarker && loopEndMarker) {
+              loop = {
+                start: loopStartMarker.position,
+                end: loopEndMarker.position,
+                count: 0x7fffffff, // infinite, should be -1 but BufferStruct doesn't support underflow
+              };
+            }
+          }
+          wavetableStructData = {
+            base: waveTblOffset,
+            len: waveData.length,
+            type: AL_RAW16_WAVE,
+            flags: FLAGS_REF_AS_OFFSET,
+            waveInfo: {
+              loop: loop ? this.ctl.insertBuffer(ALRawLoop.serialize(loop)) : 0,
+            },
+          };
+        }
+
+        return ALWaveTableStruct.serialize(wavetableStructData);
       }
       case 'sound': {
         const data = {
@@ -1083,10 +1306,12 @@ module.exports = {
   sourceToBank,
   parseCtl,
   ALBankFileStruct,
-  VADPCMApplChunkStruct,
+  VADPCMApplDataFieldStruct,
   VADPCMBookChunkStruct,
   VADPCMLoopChunkStruct,
   VADPCM_CODE_NAME,
   VADPCM_LOOP_NAME,
   VADPCM_VERSION,
+  isInvalidAIFFFromN64SDK,
+  fixInvalidAIFFFromN64SDK,
 };

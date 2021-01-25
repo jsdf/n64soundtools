@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-// eg. bankdec.js ultra/usr/lib/PR/soundbanks/GenMidiRaw.ctl -o test/genmidi
+// eg. bankdec.js ../ultra/usr/lib/PR/soundbanks/GenMidiRaw.ctl -o test/genmidi
 
 const fs = require('fs');
 const arg = require('arg');

@@ -265,6 +265,12 @@ class BufferStruct extends BufferStructBase {
       }
     }
 
+    if (size != null && size < 0) {
+      throw new Error(
+        `invalid size ${size} in field ${fieldName} on ${this.getName()}`
+      );
+    }
+
     return {field, endian, size, type: actualType};
   }
 
@@ -285,7 +291,10 @@ class BufferStruct extends BufferStructBase {
       let value;
       if (!(fieldName in data)) {
         if ('default' in field) {
-          value = field.default;
+          value =
+            typeof field.default === 'function'
+              ? field.default(data, contextData)
+              : field.default;
         } else {
           throw new Error(
             `missing field ${fieldName} when serializing ${this.getName()}`

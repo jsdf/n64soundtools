@@ -3,7 +3,7 @@ const Wave = require('./wave');
 
 function aiffToWave(aiffFile) {
   const parsedAIFF = AIFF.parse(aiffFile);
-  if (parsedAIFF.form !== 'AIFF') {
+  if (parsedAIFF.formType !== 'AIFF') {
     throw new Error(`AIFC not supported`);
   }
 

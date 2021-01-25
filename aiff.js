@@ -12,6 +12,8 @@ function getAlignedSize(size, alignment) {
 }
 
 // pascal-style string
+// assumes 1 byte for pstring length storage (implying max length of 255)
+const PSTRING_LENGTH_SIZE = 1;
 class PStringParser extends BufferStructBase {
   constructor() {
     super({name: 'PString'});
@@ -20,10 +22,13 @@ class PStringParser extends BufferStructBase {
     const length = buffer.readUInt8(startOffset);
 
     const str = buffer
-      .slice(startOffset + 1, startOffset + 1 + length)
+      .slice(
+        startOffset + PSTRING_LENGTH_SIZE,
+        startOffset + PSTRING_LENGTH_SIZE + length
+      )
       .toString('utf8');
 
-    const consumed = getAlignedSize(1 + length, 2); // pad to multiple of 2
+    const consumed = getAlignedSize(PSTRING_LENGTH_SIZE + length, 2); // pad to multiple of 2
 
     this.lastOffset = startOffset + consumed;
     return str;
@@ -39,7 +44,7 @@ class PStringParser extends BufferStructBase {
     const parts = [Buffer.from([data.length]), Buffer.from(data)];
 
     // pad to even size
-    if ((1 + data.length) % 2 === 1) {
+    if ((PSTRING_LENGTH_SIZE + data.length) % 2 === 1) {
       parts.push(Buffer.alloc(1));
     }
 
@@ -132,6 +137,140 @@ const AIFFSoundDataStruct = new BufferStruct({
     },
   },
 });
+
+// typedef short MarkerId;
+const AIFFMarkerIdField = {type: 'int', size: 2, default: 0};
+//   typedef struct {
+//   MarkerId id; /* must be > 0 */
+//   unsigned long position; /* sample frame number */
+//   pstring markerName;
+// } Marker;
+const AIFFMarkerStruct = new BufferStruct({
+  name: 'AIFFMarker',
+  endian: 'big',
+  fields: {
+    id: AIFFMarkerIdField,
+    position: {type: 'uint', size: 4},
+    markerName: {type: PString},
+  },
+});
+
+// typedef struct {
+//   ID ckID;
+//   long ckSize;
+//   unsigned short numMarkers;
+//   Marker Markers[];
+// } MarkerChunk;
+const AIFFMarkerChunkStruct = new BufferStruct({
+  name: 'AIFFMarkerChunk',
+  endian: 'big',
+  fields: {
+    numMarkers: {
+      type: 'uint',
+      size: 2,
+    },
+    markers: {
+      type: AIFFMarkerStruct,
+      arrayElements: (fields) => fields.numMarkers,
+    },
+  },
+});
+
+// typedef struct {
+//   unsigned long timeStamp; /* comment creation date */
+//   MarkerId marker; /* comments for this marker number */
+//   unsigned short count; /* comment text string length */
+//   char text[]; /* comment text */
+// } Comment;
+const AIFFCommentStruct = new BufferStruct({
+  name: 'AIFFComment',
+  endian: 'big',
+  fields: {
+    timeStamp: {type: 'uint', size: 4},
+    marker: AIFFMarkerIdField,
+    count: {type: 'uint', size: 2},
+    text: {type: 'utf8', size: (fields) => fields.count},
+  },
+});
+
+const LoopPlayMode = {
+  NoLooping: 0,
+  ForwardLooping: 1,
+  ForwardBackwardLooping: 2,
+};
+
+// typedef struct {
+//   short playMode;
+//   MarkerId beginLoop;
+//   MarkerId endLoop;
+// } Loop;
+const AIFFLoopStruct = new BufferStruct({
+  name: 'AIFFLoop',
+  endian: 'big',
+  fields: {
+    playMode: {type: 'int', size: 2, default: 0},
+    beginLoop: AIFFMarkerIdField,
+    endLoop: AIFFMarkerIdField,
+  },
+});
+
+// typedef struct {
+//   char baseNote;
+//   char detune;
+//   char lowNote;
+//   char highNote;
+//   char lowVelocity;
+//   char highVelocity;
+//   short gain;
+//   Loop sustainLoop;
+//   Loop releaseLoop;
+// } InstrumentChunk;
+const AIFFInstrumentStruct = new BufferStruct({
+  name: 'AIFFInstrument',
+  endian: 'big',
+  fields: {
+    baseNote: {type: 'int', size: 1, default: 0},
+    detune: {type: 'int', size: 1, default: 0},
+    lowNote: {type: 'int', size: 1, default: 0},
+    highNote: {type: 'int', size: 1, default: 0},
+    lowVelocity: {type: 'int', size: 1, default: 0},
+    highVelocity: {type: 'int', size: 1, default: 0},
+    gain: {type: 'int', size: 2, default: 0},
+    sustainLoop: {
+      type: AIFFLoopStruct,
+      default: () => ({
+        playMode: 0,
+        beginLoop: 0,
+        endLoop: 0,
+      }),
+    },
+    releaseLoop: {
+      type: AIFFLoopStruct,
+      default: () => ({
+        playMode: 0,
+        beginLoop: 0,
+        endLoop: 0,
+      }),
+    },
+  },
+});
+const AIFFNameChunkID = 'NAME'; /* ckID for Name Chunk */
+const AIFFAuthorChunkID = 'AUTH'; /* ckID for Author Chunk */
+const AIFFCopyrightChunkID = '(c) '; /* ckID for Copyright Chunk */
+const AIFFAnnotationChunkID = 'ANNO'; /* ckID for Annotation Chunk */
+// typedef struct {
+//   ID ckID;
+//   long ckDataSize;
+//   char text[];
+// } TextChunk;
+const AIFFTextStruct = new BufferStruct({
+  name: 'AIFFText',
+  endian: 'big',
+  fields: {
+    text: {type: 'utf8', size: (_, context) => context.dataSize},
+  },
+});
+
 const AIFCVersion1 = 0xa2805140; /* Version 1 of AIFF-C */
 
 const AIFCFormatStruct = new BufferStruct({
@@ -155,10 +294,11 @@ function serializeAIFF({
   numChannels,
   sampleRate,
   sampleSize,
-  form,
+  formType,
   compressionType,
   compressionName,
-  appl,
+  chunks, // Array<{type:string, value: Object}>
+  rawChunks, // Array<Buffer>
 }) {
   const nsamples = Math.floor(
     soundData.length / numChannels / (sampleSize / 8)
@@ -169,7 +309,7 @@ function serializeAIFF({
   DEBUG && console.log({sampleRate, sampleRate80Bit});
 
   const formatChunk =
-    form === 'AIFC'
+    formType === 'AIFC'
       ? makeAIFFChunk(
           'FVER',
           AIFCFormatStruct.serialize({
@@ -180,7 +320,7 @@ function serializeAIFF({
 
   const commChunk = makeAIFFChunk(
     'COMM',
-    form === 'AIFC'
+    formType === 'AIFC'
       ? AIFCCommonStruct.serialize({
           numChannels,
           numSampleFrames: nsamples,
@@ -199,55 +339,103 @@ function serializeAIFF({
 
   const soundDataChunk = makeAIFFChunk(
     'SSND',
-    Buffer.concat([
-      AIFFSoundDataStruct.serialize(
-        {
-          offset: 0,
-          blockSize: 0,
-          soundData,
-        },
-        {
-          soundDataSize: soundData.length,
-        }
-      ),
-    ])
+    AIFFSoundDataStruct.serialize(
+      {
+        offset: 0,
+        blockSize: 0,
+        soundData,
+      },
+      {soundDataSize: soundData.length}
+    )
   );
 
-  const applChunks =
-    form === 'AIFC' && appl
-      ? appl.map((applObj) =>
-          makeAIFFChunk(
-            'APPL',
-            Buffer.concat([
-              AIFCApplicationSpecificStruct.serialize(applObj, {
-                dataSize: applObj.data.length,
-              }),
-            ])
-          )
-        )
-      : [];
+  const serializedChunks = [];
+  (chunks || []).forEach((parsedChunk) => {
+    if (DEBUG) {
+      const unexpectedKeys = Object.keys(parsedChunk).filter(
+        (key) => key !== 'type' && key !== 'value'
+      );
 
-  const formType = Buffer.from(form === 'AIFC' ? 'AIFC' : 'AIFF', 'utf8');
+      if (unexpectedKeys.length) {
+        throw new Error(
+          `unexpected keys on parsedChunk ${JSON.stringify(unexpectedKeys)}`
+        );
+      }
+    }
+    const value = parsedChunk.value;
+    let serialized;
+    switch (parsedChunk.type) {
+      case 'SSND':
+      case 'FVER':
+      case 'COMM':
+        return;
+      case 'APPL':
+        serialized = AIFCApplicationSpecificStruct.serialize(value, {
+          dataSize: value.data.length,
+        });
+        break;
+      case 'MARK':
+        serialized = AIFFMarkerChunkStruct.serialize(value);
+        break;
+      case 'COMT':
+        serialized = AIFFCommentStruct.serialize(value);
+        break;
+      case 'INST':
+        serialized = AIFFInstrumentStruct.serialize(value);
+        break;
+      case AIFFNameChunkID:
+      case AIFFAuthorChunkID:
+      case AIFFCopyrightChunkID:
+      case AIFFAnnotationChunkID:
+        serialized = AIFFTextStruct.serialize(value, {
+          dataSize: value.text.length,
+        });
+        break;
+    }
+    if (serialized) {
+      serializedChunks.push(makeAIFFChunk(parsedChunk.type, serialized));
+    }
+  });
+
+  const formTypeSerialized = Buffer.from(
+    formType === 'AIFC' ? 'AIFC' : 'AIFF',
+    'utf8'
+  );
 
   const aiffFileContents = makeAIFFChunk(
     'FORM',
     Buffer.concat(
-      [formType, formatChunk, commChunk, soundDataChunk, ...applChunks].filter(
-        Boolean
-      )
+      [
+        formTypeSerialized,
+        formatChunk,
+        commChunk,
+        soundDataChunk,
+        ...serializedChunks,
+        ...(rawChunks || []),
+      ].filter(Boolean)
     )
   );
 
   return aiffFileContents;
 }
 
-function parseAIFF(fileContents) {
+function parseAIFF(fileContents, options = {}) {
   let pos = 0;
 
   let output = {};
 
   const fileChunks = [];
+  const parsedFormLocalChunks = [];
+
   while (pos < fileContents.length) {
+    DEBUG &&
+      console.error(
+        'parsing file chunk',
+        fileContents.slice(pos, pos + 4).toString('utf8'),
+        'at',
+        pos,
+        {fileContents}
+      );
     const chunk = AIFFChunkStruct.parse(fileContents, pos);
     chunk.startOffset = pos;
     chunk.endOffset = AIFFChunkStruct.lastOffset;
@@ -263,13 +451,24 @@ function parseAIFF(fileContents) {
   formChunks.forEach((formChunk) => {
     let pos = 0;
     DEBUG && console.log('FORM chunk', formChunk);
-    formChunk.form = formChunk.chunkData.slice(0, 4).toString('utf8');
-    output.form = formChunk.form;
+    const formType = formChunk.chunkData.slice(0, 4).toString('utf8');
+    formChunk.formType = formType;
+
+    if (formType === 'AIFF' || formType === 'AIFC') {
+      output.formType = formType;
+    }
     pos += 4; // skip FORM identifier
-    DEBUG && console.log({formID: formChunk.form});
+    DEBUG && console.log({formType});
 
     const localChunks = [];
     while (pos < formChunk.chunkData.length) {
+      DEBUG &&
+        console.error(
+          'parsing FORM local chunk',
+          formChunk.chunkData.slice(pos, pos + 4),
+          'at',
+          pos
+        );
       const chunk = AIFFChunkStruct.parse(formChunk.chunkData, pos);
       chunk.startOffset = pos;
       chunk.endOffset = AIFFChunkStruct.lastOffset;
@@ -283,53 +482,73 @@ function parseAIFF(fileContents) {
       }
       switch (chunk.ckID) {
         case 'COMM':
-          chunk.comm =
-            formChunk.form === 'AIFC'
+          chunk.parsed =
+            formType === 'AIFC'
               ? AIFCCommonStruct.parse(chunk.chunkData)
               : AIFFCommonStruct.parse(chunk.chunkData);
-          chunk.comm.sampleRate = ieeeExtended.ConvertFromIeeeExtended(
-            chunk.comm.sampleRate
+          chunk.parsed.sampleRate = ieeeExtended.ConvertFromIeeeExtended(
+            chunk.parsed.sampleRate
           );
 
-          output.sampleRate = chunk.comm.sampleRate;
-          output.sampleSize = chunk.comm.sampleSize;
-          output.numChannels = chunk.comm.numChannels;
-          output.compressionType = chunk.comm.compressionType;
-          output.compressionName = chunk.comm.compressionName;
+          output.sampleRate = chunk.parsed.sampleRate;
+          output.sampleSize = chunk.parsed.sampleSize;
+          output.numChannels = chunk.parsed.numChannels;
+          output.compressionType = chunk.parsed.compressionType;
+          output.compressionName = chunk.parsed.compressionName;
           break;
         case 'SSND':
-          chunk.ssnd = AIFFSoundDataStruct.parse(chunk.chunkData, 0, {
+          chunk.parsed = AIFFSoundDataStruct.parse(chunk.chunkData, 0, {
             soundDataSize:
               chunk.ckSize - AIFF_SOUND_DATA_CHUNK_SIZE_EXCL_SOUNDDATA,
           });
-          output.soundData = chunk.ssnd.soundData;
+          output.soundData = chunk.parsed.soundData;
+          break;
+        case 'MARK':
+          chunk.parsed = AIFFMarkerChunkStruct.parse(chunk.chunkData, 0);
+          break;
+        case 'COMT':
+          chunk.parsed = AIFFCommentStruct.parse(chunk.chunkData, 0);
+          break;
+        case 'INST':
+          chunk.parsed = AIFFInstrumentStruct.parse(chunk.chunkData, 0);
+          break;
+        case AIFFNameChunkID:
+        case AIFFAuthorChunkID:
+        case AIFFCopyrightChunkID:
+        case AIFFAnnotationChunkID:
+          chunk.parsed = AIFFTextStruct.parse(chunk.chunkData, 0, {
+            dataSize: chunk.ckSize,
+          });
           break;
         case 'APPL':
-          chunk.appl = AIFCApplicationSpecificStruct.parse(chunk.chunkData, 0, {
-            dataSize: chunk.ckSize - AIFC_APPL_CHUNK_SIZE_EXCL_DATA,
-          });
-          output.appl = output.appl || [];
-          output.appl.push(chunk.appl);
-          break;
-        case 'AIFC':
-          chunk.format = AIFCFormatStruct.parse(chunk.chunkData);
+          chunk.parsed = AIFCApplicationSpecificStruct.parse(
+            chunk.chunkData,
+            0,
+            {
+              dataSize: chunk.ckSize - AIFC_APPL_CHUNK_SIZE_EXCL_DATA,
+            }
+          );
           break;
         case 'FVER':
-          chunk.fver = AIFCFormatStruct.parse(chunk.chunkData);
+          chunk.parsed = AIFCFormatStruct.parse(chunk.chunkData);
           break;
         default:
           DEBUG && console.error('unknown chunk type', chunk.ckID);
       }
 
       DEBUG && console.log('local chunk', chunk);
+      parsedFormLocalChunks.push({type: chunk.ckID, value: chunk.parsed});
 
       localChunks.push(chunk);
       pos = AIFFChunkStruct.lastOffset;
     }
     formChunk.localChunks = localChunks;
   });
-  output.fileChunks = fileChunks;
-  output.formChunks = formChunks;
+
+  if (options.includeRawChunks) {
+    output.fileChunks = fileChunks;
+  }
+  output.chunks = parsedFormLocalChunks;
   return output;
 }
 
@@ -337,4 +556,5 @@ module.exports = {
   serialize: serializeAIFF,
   parse: parseAIFF,
   PString,
+  LoopPlayMode,
 };

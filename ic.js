@@ -2,6 +2,7 @@
 
 // test with:
 // node_modules/.bin/pegjs instparser.pegjs && node instparser.js ./test/test.inst
+// or ./ic.js test/test.inst -o test/test
 
 const fs = require('fs');
 const arg = require('arg');
