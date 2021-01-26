@@ -1230,7 +1230,9 @@ class ALBankFileWriter {
             type: AL_RAW16_WAVE,
             flags: FLAGS_REF_AS_OFFSET,
             waveInfo: {
-              loop: loop ? this.ctl.insertBuffer(ALRawLoop.serialize(loop)) : 0,
+              loop: loop
+                ? this.ctl.insertBuffer(ALRawLoopStruct.serialize(loop))
+                : 0,
             },
           };
         }

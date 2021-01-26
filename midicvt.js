@@ -90,7 +90,7 @@ const acceptableEvents = new Set([
   'controller',
   'programChange',
   'setTempo',
-  // 'timeSignature',
+  'timeSignature',
 ]);
 
 if (args['--blank']) {
@@ -102,7 +102,7 @@ if (args['--blank']) {
     track.forEach((ev) => {
       const absoluteTime = ev.deltaTime + lastEventAbsTime;
       ev.absoluteTime = absoluteTime;
-      lastEventAbsTime += absoluteTime;
+      lastEventAbsTime = absoluteTime;
       if (!acceptableEvents.has(ev.type)) {
         return;
       }

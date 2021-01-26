@@ -20,6 +20,11 @@ if (args['--help']) {
   process.exit(0);
 }
 
+if (args._.length === 0) {
+  console.error(`error: at least one input file must be specified`);
+  process.exit(1);
+}
+
 const inFiles = args._.map((f) => fs.readFileSync(f));
 
 const output = serializeSBK(inFiles);
