@@ -4,7 +4,9 @@
 #include "graphic.h"
 #include "segment.h"
 
+#ifdef ED64
 #include "ed64io.h"
+#endif
 
 #ifdef N_AUDIO
 #include <nualsgi_n.h>
@@ -29,6 +31,12 @@ void soundCheck(void);
 #define DBGPRINT(args...)
 #endif
 
+#ifdef ED64
+#define printf ed64PrintfSync2
+#else
+#define printf(args...)
+#endif
+
 
 #define MAX_SEQ_NO 2
 #define MAX_SEQ_LENGTH  50000
@@ -50,7 +58,7 @@ ALSeq
 
 ALSeqpConfig  seqpConfig = {
   NU_AU_SEQ_VOICE_MAX,
-  NU_AU_SEQ_EVENT_MAX,
+  128, // NU_AU_SEQ_EVENT_MAX,
   NU_AU_SEQ_CHANNEL_MAX,
   0,
   NULL,
@@ -73,8 +81,42 @@ int getMaxSeqNo() {
 #define DBG_CHANNELS 0
 #define DBG_EVENTS 1
 static int debugMidiEvents = TRUE;
-static int debugMidiEventsParsed = TRUE;
 static int debugMidiChannels = TRUE;
+static int debugMidiEventsParsed = TRUE;
+
+#define DEBUG_SCREENS 2
+#define CH_SCREEN 0
+#define EV_SCREEN 1
+static int debugScreen = EV_SCREEN;
+
+
+char* ALMsgTypeStrings[] = {
+    "AL_SEQ_REF_EVT", /* Reference to a pending event in the sequence. */
+    "AL_SEQ_MIDI_EVT",
+    "AL_SEQP_MIDI_EVT",
+    "AL_TEMPO_EVT",
+    "AL_SEQ_END_EVT",
+    "AL_NOTE_END_EVT",
+    "AL_SEQP_ENV_EVT",
+    "AL_SEQP_META_EVT",
+    "AL_SEQP_PROG_EVT",
+    "AL_SEQP_API_EVT",
+    "AL_SEQP_VOL_EVT",
+    "AL_SEQP_LOOP_EVT",
+    "AL_SEQP_PRIORITY_EVT",
+    "AL_SEQP_SEQ_EVT",
+    "AL_SEQP_BANK_EVT",
+    "AL_SEQP_PLAY_EVT",
+    "AL_SEQP_STOP_EVT",
+    "AL_SEQP_STOPPING_EVT",
+    "AL_TRACK_END",
+    "AL_CSP_LOOPSTART",
+    "AL_CSP_LOOPEND",
+    "AL_CSP_NOTEOFF_EVT",
+    "AL_TREM_OSC_EVT",
+    "AL_VIB_OSC_EVT"
+};
+
 
 // load a sample bank file for a seq into the audio heap, then assign it to the seq player
 // bank_addr: bank (.ctl) addr in rom
@@ -89,11 +131,11 @@ void seqPlayerBankSet(u8* bank_addr, u32 bank_size, u8* table_addr)
   seqPlayerBankFile = nuAuHeapAlloc(bank_size);
   nuPiReadRom((u32)bank_addr, seqPlayerBankFile, bank_size);
 
-  ed64PrintfSync2("bankCount %d\n", seqPlayerBankFile->bankCount);
+  printf("bankCount %d\n", seqPlayerBankFile->bankCount);
   for (i = 0; i < seqPlayerBankFile->bankCount; ++i)
   {
     u32 offset = seqPlayerBankFile->bankArray[i];
-    ed64PrintfSync2("bank %d offset=%d p=%p\n", i, offset, bank_addr + offset);
+    printf("bank %d offset=%d p=%p\n", i, offset, bank_addr + offset);
   }
   
   alBnkfNew(seqPlayerBankFile, table_addr);
@@ -101,15 +143,15 @@ void seqPlayerBankSet(u8* bank_addr, u32 bank_size, u8* table_addr)
 
   for (i = 0; i < seqPlayerBankFile->bankCount; ++i) {
     ALBank * bank = (ALBank *)seqPlayerBankFile->bankArray[i];
-    ed64PrintfSync2("bank %d p=%x sampleRate=%d\n", i, bank, bank->sampleRate);
+    printf("bank %d p=%x sampleRate=%d\n", i, bank, bank->sampleRate);
     for (j = 0; j < bank->instCount; ++j) {
       ALInstrument * inst = (ALInstrument *)bank->instArray[j];
-      ed64PrintfSync2("inst %d p=%x\n", j, inst);
+      printf("inst %d p=%x\n", j, inst);
 
       for (k = 0; k < inst->soundCount; ++k) {
         ALSound * sound = (ALSound *)inst->soundArray[k];
-        ed64PrintfSync2("sound %d p=%x\n", j, sound);
-        ed64PrintfSync2("wavetable type=%u\n",  sound->wavetable->type);
+        printf("sound %d p=%x\n", j, sound);
+        printf("wavetable type=%u\n",  sound->wavetable->type);
         break;
       }
       break;
@@ -235,7 +277,6 @@ char* MidiEventTypeStrings[] = {
   "other  "
 };
 
-
 MidiEventType getMidiEventType(status) {
   switch (status >> 4) {
     case 0xb:
@@ -269,7 +310,7 @@ void playMidi(u8 midiMsgStart[], u32 seqTimeOffset) {
   }
 
   DBGPRINT("midimsg tempo=%d seqTimeOffsetUSRel=%d midi=%x %x %x\n",tempo,seqTimeOffsetUSRel, midiMsgStatus, midiMsgData1, midiMsgData2);
-  if (debugMidiEvents) {
+  if (debugMidiEvents && debugScreen == EV_SCREEN) {
     if (debugMidiEventsParsed) {
       char* eventTypeStr = MidiEventTypeStrings[eventType];
       nuDebConPrintf(DBG_EVENTS, "ch%2u %s %3u %3u\n", channel, eventTypeStr, midiMsgData1, midiMsgData2); 
@@ -380,7 +421,7 @@ void makeDL00(void)
   if (!initialized) {
     ALSeqFile * seqFile = (ALSeqFile*)_seqSegmentRomStart;
 
-    ed64PrintfSync2("seqFile=%x, _seqSegmentRomStart=%x, triPos_y=%x\n", seqFile, &_seqSegmentRomStart, &triPos_y);
+    printf("seqFile=%x, _seqSegmentRomStart=%x, triPos_y=%x\n", seqFile, &_seqSegmentRomStart, &triPos_y);
 
     initialized = TRUE;
   }
@@ -435,11 +476,41 @@ void makeDL00(void)
       nuDebConCPuts(0, "Controller1 not connect");
     }
 
-  if (debugMidiChannels) {
+  if (debugMidiChannels && debugScreen == CH_SCREEN) {
     for (i = 0; i < NUM_CHANNELS; i++){ 
       nuDebConTextPos(DBG_CHANNELS, 21, 2 + i);
       nuDebConPrintf(DBG_CHANNELS, "ch%2d v%3d p%3d\n", i, chVolumes[i], chPrograms[i]);
     }
+  }
+
+
+  if (debugMidiEvents && debugScreen == EV_SCREEN) { 
+    ALEventListItem     *item;
+    ALEventListItem     *nextItem;
+    ALLink              *node;
+    int itemTime = 0;
+    i = 0;
+    nuDebConClear(DBG_EVENTS); 
+    for (node = &seqPlayer->evtq.allocList; node != 0; node = node->next) {
+      
+      if (!node->next) { /* end of the list */
+        break;
+      } else {
+        item = (ALEventListItem*)node;
+        if (i < 20) {
+          itemTime += item->delta;
+          
+          nuDebConTextPos(DBG_EVENTS,  3,  3 + i);
+          nuDebConPrintf(DBG_EVENTS, "%2d: %s %d\n", i, ALMsgTypeStrings[item->evt.type], itemTime); 
+          // nuDebConPrintf(DBG_EVENTS, "0x%02x%02x%02x @ %ums\n", midiMsgStatus, midiMsgData1, midiMsgData2, midiMsgTime/1000); 
+        }
+        nextItem = (ALEventListItem *)node->next;
+      }
+      i++;
+    }
+
+    nuDebConTextPos(DBG_EVENTS,  3,  3 + 20);
+    nuDebConPrintf(DBG_EVENTS, "queue=%d\n", i); 
   }
     
   /* Draw characters on the frame buffer */
@@ -472,6 +543,18 @@ void updateGame00(void)
       alSeqpStop(seqPlayer);
       osSyncPrintf("MIDI panic\n");
       alSeqpPlay(seqPlayer);
+    }
+
+  if(contdata[0].trigger & U_CBUTTONS)
+    {
+      debugScreen++;
+      if (debugScreen >= DEBUG_SCREENS) debugScreen = 0;
+    }
+    
+  if(contdata[0].trigger & D_CBUTTONS)
+    {
+      debugScreen--;
+      if (debugScreen < 0) debugScreen = DEBUG_SCREENS-1;
     }
 
   /* Rotate fast while the B button is pushed */

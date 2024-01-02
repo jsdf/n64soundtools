@@ -8,7 +8,9 @@
 #include <nualsgi.h>
 #endif
 
+#ifdef ED64
 #include "ed64io.h"
+#endif
 
 /* Declaration of the prototype  */
 void stage00(int);
@@ -67,6 +69,7 @@ s32 auInit(void)
 void mainproc(void)
 {
 
+#ifdef ED64
   // start everdrive communication
   evd_init();
 
@@ -77,6 +80,7 @@ void mainproc(void)
 
   // start thread which will catch and log errors
   ed64StartFaultHandlerThread(NU_GFX_TASKMGR_THREAD_PRI);
+#endif
 
   /* The initialization of graphic  */
   nuGfxInit();

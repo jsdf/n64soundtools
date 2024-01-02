@@ -27,6 +27,9 @@ LCDEFS =	-DNU_DEBUG -DF3DEX_GBI_2
 ifdef N_AUDIO
 LCDEFS += -DN_AUDIO
 endif
+ifdef ED64
+LCDEFS += -DED64
+endif
 ifdef REMOTE_MIDI
 LCDEFS += -DREMOTE_MIDI
 endif
