@@ -1,0 +1,22 @@
+{
+  "name": "live64",
+  "version": "1.0.0",
+  "description": "",
+  "main": "index.ts",
+  "scripts": {
+    "start": "tsx app.ts",
+    "dev": "tsx --watch app.ts",
+    "test": "echo \"Error: no test specified\" && exit 1"
+  },
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "ableton-js": "^3.4.1",
+    "ts-node": "^10.9.2",
+    "tsx": "^4.7.0",
+    "ws": "^8.16.0"
+  },
+  "devDependencies": {
+    "@types/ws": "^8.5.10"
+  }
+}
